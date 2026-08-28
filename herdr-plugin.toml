@@ -1,0 +1,96 @@
+id = "herdr-nvim"
+name = "Herdr Neovim"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "Per-tab Neovim sidebars backed by headless daemons, plus code annotations you can send to any agent in the workspace."
+platforms = ["linux", "macos"]
+
+# `herdr plugin install` builds the Rust binary. `herdr plugin link` does not run
+# build commands: run `cargo build --release` yourself when developing locally.
+[[build]]
+command = ["cargo", "build", "--release"]
+platforms = ["linux", "macos"]
+
+# Reconcile daemons after Herdr restores a session: drop dead records and stop
+# daemons whose tab no longer exists.
+[[startup]]
+command = ["./target/release/herdr-nvim", "startup"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle Neovim sidebar"
+description = "Show or hide this tab's Neovim sidebar. The headless daemon behind it keeps running."
+contexts = ["tab"]
+command = ["./target/release/herdr-nvim", "toggle"]
+
+[[actions]]
+id = "open"
+title = "Open Neovim sidebar"
+description = "Open this tab's Neovim sidebar, or focus it if it is already open."
+contexts = ["tab"]
+command = ["./target/release/herdr-nvim", "open"]
+
+[[actions]]
+id = "close"
+title = "Hide Neovim sidebar"
+description = "Hide this tab's Neovim sidebar without stopping its daemon."
+contexts = ["tab"]
+command = ["./target/release/herdr-nvim", "close"]
+
+[[actions]]
+id = "edit"
+title = "Open selection in Neovim sidebar"
+description = "Open the selected file[:line] (or a Ctrl-clicked file:// link) in this tab's Neovim sidebar."
+contexts = ["pane", "selection"]
+command = ["./target/release/herdr-nvim", "edit", "--from-context"]
+
+[[actions]]
+id = "pick-file"
+title = "Open file from agent output"
+description = "Fuzzy-pick a file the agent touched this session (or any repo file) and open it in this tab's Neovim sidebar."
+contexts = ["pane"]
+command = ["./target/release/herdr-nvim", "pick-file"]
+
+[[actions]]
+id = "gc"
+title = "Clean up Neovim daemons"
+description = "Stop daemons whose tab is gone and forget dead ones."
+contexts = ["global"]
+command = ["./target/release/herdr-nvim", "gc"]
+
+# Daemons follow their tab: closing the tab (or its workspace) stops them.
+[[events]]
+on = "tab.closed"
+command = ["./target/release/herdr-nvim", "event"]
+
+[[events]]
+on = "workspace.closed"
+command = ["./target/release/herdr-nvim", "event"]
+
+# A sidebar closed through Herdr itself: forget the pane, keep the daemon.
+[[events]]
+on = "pane.closed"
+command = ["./target/release/herdr-nvim", "event"]
+
+# The sidebar pane attaches a `nvim --remote-ui` client to the tab's daemon.
+[[panes]]
+id = "sidebar"
+title = "Neovim"
+placement = "split"
+command = ["./target/release/herdr-nvim", "sidebar"]
+
+# Ctrl-click on file links opens them in the sidebar. Patterns adapted from
+# ChmaraX/herdr-nvim (MIT). The plain-path pattern needs a directory segment
+# and an extension (bare `README.md` stays a plain word); optional :line[:col].
+[[link_handlers]]
+id = "file-path"
+title = "Open in Neovim sidebar"
+pattern = '^~?[\w.@/()\[\]+-]+/[\w.@()\[\]+-]+\.[A-Za-z]\w*(?::\d+){0,2}$'
+action = "edit"
+
+# OSC 8 file:// links (Claude Code emits these) would otherwise go to the browser.
+[[link_handlers]]
+id = "file-url"
+title = "Open in Neovim sidebar"
+pattern = '^file://'
+action = "edit"

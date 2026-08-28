@@ -1,0 +1,19 @@
+[package]
+name = "herdr-nvim"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Neovim integration for Herdr: per-tab nvim sidebars backed by headless daemons, and code annotations you can send to any agent in the workspace"
+license = "MIT"
+repository = "https://github.com/jtnovellis/herdr-nvim"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
