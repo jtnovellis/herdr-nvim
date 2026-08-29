@@ -1,5 +1,40 @@
 local M = {}
 
+--- Run a command and return its trimmed stdout, or nil. Blocking, but health
+--- checks are explicitly a "tell me everything, I'll wait" operation.
+local function capture(cmd, timeout_ms)
+  local ok, res = pcall(function()
+    return vim.system(cmd, { text = true }):wait(timeout_ms or 3000)
+  end)
+  if not ok or not res or res.code ~= 0 then
+    return nil
+  end
+  return vim.trim(res.stdout or "")
+end
+
+--- "0.8.2" -> {0, 8, 2}; anything unparsable -> nil.
+local function semver(text)
+  if type(text) ~= "string" then
+    return nil
+  end
+  local major, minor, patch = text:match("(%d+)%.(%d+)%.(%d+)")
+  if not major then
+    return nil
+  end
+  return { tonumber(major), tonumber(minor), tonumber(patch) }
+end
+
+--- True when `have` is at least `want`.
+local function version_at_least(have, want)
+  for i = 1, 3 do
+    local a, b = have[i] or 0, want[i] or 0
+    if a ~= b then
+      return a > b
+    end
+  end
+  return true
+end
+
 function M.check()
   local health = vim.health
   local hn = require("herdr-nvim")
@@ -43,8 +78,57 @@ function M.check()
 
   health.start("herdr-nvim: Herdr")
   local herdr = vim.env.HERDR_BIN_PATH or "herdr"
+  local MIN_HERDR = { 0, 8, 2 } -- matches min_herdr_version in herdr-plugin.toml
   if vim.fn.executable(herdr) == 1 then
     health.ok("herdr CLI: " .. herdr)
+    -- The manifest declares a minimum Herdr version that nothing checks at
+    -- runtime, so an older Herdr fails later with an opaque RPC error.
+    local raw = capture({ herdr, "--version" })
+    local version = semver(raw)
+    if not version then
+      health.info("could not read the Herdr version" .. (raw and (": " .. raw) or ""))
+    elseif version_at_least(version, MIN_HERDR) then
+      health.ok("Herdr " .. table.concat(version, ".") .. " (>= 0.8.2)")
+    else
+      health.error("Herdr " .. table.concat(version, ".") .. " is too old; herdr-nvim needs 0.8.2 or newer")
+    end
+
+    -- By far the most common first-run failure: the Neovim half is installed
+    -- but the Herdr half was never linked, so no toggle key can work.
+    local plugins = capture({ herdr, "plugin", "list" })
+    if not plugins then
+      health.info("could not list Herdr plugins (is the Herdr server running?)")
+    elseif plugins:find("herdr%-nvim") then
+      local disabled = plugins:match("herdr%-nvim[^\n]*disabled")
+      if disabled then
+        health.error("the herdr-nvim plugin is installed but disabled (`herdr plugin enable herdr-nvim`)")
+      else
+        health.ok("herdr-nvim is registered with Herdr")
+      end
+    else
+      health.error(
+        "herdr-nvim is not installed in Herdr: no toggle key can work. "
+          .. "Run `herdr plugin install jtnovellis/herdr-nvim`, or "
+          .. "`herdr plugin link .` from a local checkout."
+      )
+    end
+
+    -- The README's biggest gotcha: Herdr binds prefix+e to its own scrollback
+    -- editor, so a toggle bound there never fires.
+    local cfg = vim.fn.expand("~/.config/herdr/config.toml")
+    local conf = vim.uv.fs_stat(cfg) and table.concat(vim.fn.readfile(cfg), "\n") or nil
+    if not conf then
+      health.info("no Herdr config.toml found; bind a key to herdr-nvim.toggle to use the sidebar")
+    elseif conf:find("herdr%-nvim%.toggle") then
+      health.ok("a key is bound to herdr-nvim.toggle in config.toml")
+    else
+      health.warn(
+        "no key is bound to herdr-nvim.toggle in "
+          .. cfg
+          .. "; the sidebar can only be "
+          .. "opened with `herdr plugin action invoke herdr-nvim toggle`"
+      )
+    end
   else
     health.error("herdr CLI not found (set HERDR_BIN_PATH or add herdr to $PATH)")
   end
@@ -75,7 +159,13 @@ function M.check()
     health.info("server: " .. tostring(vim.v.servername) .. ", attached UIs: " .. #vim.api.nvim_list_uis())
     local rs = require("herdr-nvim.reload").status()
     if rs.started then
-      health.ok(("reload watcher active (%d director%s%s)"):format(rs.watchers, rs.watchers == 1 and "y" or "ies", rs.polling and ", polling fallback" or ""))
+      health.ok(
+        ("reload watcher active (%d director%s%s)"):format(
+          rs.watchers,
+          rs.watchers == 1 and "y" or "ies",
+          rs.polling and ", polling fallback" or ""
+        )
+      )
     else
       health.info("reload watcher disabled")
     end
@@ -111,11 +201,19 @@ function M.check()
   end
 
   health.start("herdr-nvim: file picker")
-  local claude_root = (vim.env.CLAUDE_CONFIG_DIR and vim.env.CLAUDE_CONFIG_DIR ~= "") and vim.env.CLAUDE_CONFIG_DIR or (vim.env.HOME .. "/.claude")
-  if vim.uv.fs_stat(claude_root .. "/projects") then
+  -- $HOME can legitimately be unset (a bare service manager, `env -i`), and
+  -- concatenating nil would abort the whole health report.
+  local home = vim.env.HOME or vim.uv.os_homedir()
+  local claude_root = (vim.env.CLAUDE_CONFIG_DIR and vim.env.CLAUDE_CONFIG_DIR ~= "") and vim.env.CLAUDE_CONFIG_DIR
+    or (home and home .. "/.claude")
+  if not claude_root then
+    health.warn("cannot locate a home directory ($HOME is unset): the picker cannot read session logs")
+  elseif vim.uv.fs_stat(claude_root .. "/projects") then
     health.ok("Claude Code session logs: " .. claude_root .. "/projects")
   else
-    health.info("no Claude Code session logs at " .. claude_root .. "/projects (the picker falls back to git + pane output)")
+    health.info(
+      "no Claude Code session logs at " .. claude_root .. "/projects (the picker falls back to git + pane output)"
+    )
   end
   if vim.fn.executable("git") == 1 then
     health.ok("git found (dirty files, diff stats, repo-wide search)")

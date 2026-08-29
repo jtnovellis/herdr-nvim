@@ -4,7 +4,21 @@
 local R = {}
 local uv = vim.uv or vim.loop
 
-local state = { started = false, watchers = {}, refs = {}, debounce = nil, timer = nil, opts = {} }
+-- `buf_dir` maps a buffer number to the directory it holds a watch reference
+-- for. Keeping it here rather than in `vim.b` makes releasing a reference
+-- idempotent and safe to do while the buffer is being torn down.
+-- `unwatched` counts references for directories that hit the watcher cap and
+-- are covered by the polling fallback instead.
+local state = {
+  started = false,
+  watchers = {},
+  refs = {},
+  buf_dir = {},
+  unwatched = {},
+  debounce = nil,
+  timer = nil,
+  opts = {},
+}
 local MAX_WATCHERS = 64
 
 local function notify(msg, level)
@@ -43,6 +57,8 @@ local function watch_dir(dir)
     return
   end
   if vim.tbl_count(state.watchers) >= MAX_WATCHERS then
+    -- No handle to spare: the polling fallback covers this directory instead.
+    state.unwatched[dir] = (state.unwatched[dir] or 0) + 1
     R.start_timer()
     return
   end
@@ -63,13 +79,24 @@ local function watch_dir(dir)
 end
 
 local function unwatch_dir(dir)
+  -- Directories parked on the polling fallback hold no handle.
+  if state.unwatched[dir] then
+    local left = state.unwatched[dir] - 1
+    state.unwatched[dir] = left > 0 and left or nil
+    R.stop_timer_if_idle()
+    return
+  end
   local refs = (state.refs[dir] or 1) - 1
-  state.refs[dir] = refs
-  if refs <= 0 and state.watchers[dir] then
-    pcall(state.watchers[dir].stop, state.watchers[dir])
-    pcall(state.watchers[dir].close, state.watchers[dir])
+  if refs > 0 then
+    state.refs[dir] = refs
+    return
+  end
+  state.refs[dir] = nil
+  local handle = state.watchers[dir]
+  if handle then
+    pcall(handle.stop, handle)
+    pcall(handle.close, handle)
     state.watchers[dir] = nil
-    state.refs[dir] = nil
   end
 end
 
@@ -79,6 +106,15 @@ local function buffer_dir(buf)
     return nil
   end
   return vim.fn.fnamemodify(name, ":p:h")
+end
+
+--- Stop polling once every directory that needed it has been released.
+function R.stop_timer_if_idle()
+  if state.timer and next(state.unwatched) == nil then
+    state.timer:stop()
+    state.timer:close()
+    state.timer = nil
+  end
 end
 
 --- Polling fallback, used only when the watcher cap is reached.
@@ -109,17 +145,23 @@ function R.start(opts)
     group = group,
     callback = function(ev)
       local dir = buffer_dir(ev.buf)
-      if dir and not vim.b[ev.buf].herdr_nvim_watch_dir then
-        vim.b[ev.buf].herdr_nvim_watch_dir = dir
+      if dir and not state.buf_dir[ev.buf] then
+        state.buf_dir[ev.buf] = dir
         watch_dir(dir)
       end
     end,
   })
+  -- Wiping a buffer fires BufDelete *and* BufWipeout, so clear the marker
+  -- before releasing the reference: whichever event arrives second finds nil
+  -- and does nothing. Decrementing twice would drop the refcount to zero while
+  -- other buffers in the same directory are still open, silently closing the
+  -- fs_event handle and killing auto-reload for them.
   vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
     group = group,
     callback = function(ev)
-      local dir = vim.b[ev.buf] and vim.b[ev.buf].herdr_nvim_watch_dir
+      local dir = state.buf_dir[ev.buf]
       if dir then
+        state.buf_dir[ev.buf] = nil
         unwatch_dir(dir)
       end
     end,
@@ -138,7 +180,10 @@ function R.start(opts)
         vim.v.fcs_choice = ""
         if not vim.b[ev.buf].herdr_nvim_stale then
           vim.b[ev.buf].herdr_nvim_stale = true
-          notify(vim.fn.fnamemodify(ev.file, ":~:.") .. " changed on disk but the buffer is modified; :e! to reload", vim.log.levels.WARN)
+          notify(
+            vim.fn.fnamemodify(ev.file, ":~:.") .. " changed on disk but the buffer is modified; :e! to reload",
+            vim.log.levels.WARN
+          )
         end
         return
       end
@@ -163,8 +208,8 @@ function R.start(opts)
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) then
       local dir = buffer_dir(buf)
-      if dir and not vim.b[buf].herdr_nvim_watch_dir then
-        vim.b[buf].herdr_nvim_watch_dir = dir
+      if dir and not state.buf_dir[buf] then
+        state.buf_dir[buf] = dir
         watch_dir(dir)
       end
     end
@@ -178,6 +223,8 @@ function R.stop()
     state.watchers[dir] = nil
   end
   state.refs = {}
+  state.buf_dir = {}
+  state.unwatched = {}
   if state.timer then
     state.timer:stop()
     state.timer:close()

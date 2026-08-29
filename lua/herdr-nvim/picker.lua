@@ -3,8 +3,27 @@
 -- once you type. Matching uses Neovim's own matchfuzzypos().
 local P = {}
 
-local state = { list_win = nil, list_buf = nil, prompt_win = nil, prompt_buf = nil, spec = nil, matches = {}, cursor = 1 }
+-- `top` is the first match rendered, so the list buffer only ever holds one
+-- screenful regardless of how many candidates matched. `last_query` /
+-- `last_matches` let a query that extends the previous one narrow the previous
+-- result set instead of rescanning every candidate.
+local state = {
+  list_win = nil,
+  list_buf = nil,
+  prompt_win = nil,
+  prompt_buf = nil,
+  spec = nil,
+  matches = {},
+  cursor = 1,
+  top = 1,
+  last_query = nil,
+  last_matches = nil,
+  pending_query = nil,
+  debounce = nil,
+}
 local ns = vim.api.nvim_create_namespace("herdr-nvim-picker")
+-- Long enough to coalesce fast typing, short enough to feel immediate.
+local REFILTER_DEBOUNCE_MS = 30
 
 local function notify(msg, level)
   require("herdr-nvim").notify(msg, level)
@@ -58,15 +77,50 @@ function P.rank(cands, query, max_files)
   return out
 end
 
+--- Byte offset of the 0-based character index `idx` in `str`.
+---
+--- Must be byteidx(), not vim.str_byteindex(): matchfuzzypos() counts
+--- characters the way Vim does, which does not count combining marks
+--- separately, while str_byteindex() counts UTF-32 codepoints, which does.
+--- The two disagree on decomposed text such as "e" + U+0301.
+--- byteidx() returns -1 past the end, so clamp.
+local function char_to_byte(str, idx)
+  local byte = vim.fn.byteidx(str, idx)
+  if byte < 0 then
+    return #str
+  end
+  return byte
+end
+
 local function render()
   if not is_open() then
+    return
+  end
+  -- The floats use bufhidden=wipe, so a buffer can be gone while its window
+  -- still exists; this runs from a TextChanged autocmd, where a throw escapes.
+  if not (state.list_buf and vim.api.nvim_buf_is_valid(state.list_buf)) then
     return
   end
   local spec = state.spec
   local now = os.time()
   local width = vim.api.nvim_win_get_width(state.list_win)
+  local height = math.max(1, vim.api.nvim_win_get_height(state.list_win))
+
+  -- Only the visible slice is built. Rendering every match meant one line plus
+  -- one extmark per matched character for the whole result set on every
+  -- keystroke, which is what made the picker crawl in a large repo.
+  local total = #state.matches
+  if state.cursor < state.top then
+    state.top = state.cursor
+  elseif state.cursor > state.top + height - 1 then
+    state.top = state.cursor - height + 1
+  end
+  state.top = math.max(1, math.min(state.top, math.max(1, total - height + 1)))
+  local last = math.min(total, state.top + height - 1)
+
   local lines, meta = {}, {}
-  for _, m in ipairs(state.matches) do
+  for idx = state.top, last do
+    local m = state.matches[idx]
     local c = m.cand
     local right = ""
     if c.diff_stat then
@@ -77,10 +131,17 @@ local function render()
     if c.touched_unix then
       right = right .. (right ~= "" and "  " or "") .. age(now, c.touched_unix)
     end
-    local left = c.display
+    local left = c.display or display_path(c.path, spec.cwd, spec.home)
+    c.display = left
     local pad = math.max(1, width - vim.fn.strdisplaywidth(left) - vim.fn.strdisplaywidth(right) - 3)
     table.insert(lines, "  " .. left .. string.rep(" ", pad) .. right)
-    table.insert(meta, { positions = m.positions, right = right, diff = c.diff_stat ~= nil, new = c.newly_created })
+    table.insert(meta, {
+      positions = m.positions,
+      display = left,
+      right = right,
+      diff = c.diff_stat ~= nil,
+      new = c.newly_created,
+    })
   end
   if #lines == 0 then
     lines = { "  (no matches)" }
@@ -91,8 +152,19 @@ local function render()
   vim.api.nvim_buf_clear_namespace(state.list_buf, ns, 0, -1)
   for i, m in ipairs(meta) do
     for _, pos in ipairs(m.positions) do
-      -- positions are 0-based byte offsets into display; the line has 2 leading spaces
-      pcall(vim.api.nvim_buf_set_extmark, state.list_buf, ns, i - 1, pos + 2, { end_col = pos + 3, hl_group = "HerdrNvimPickerMatch" })
+      -- matchfuzzypos() reports *character* indices, but extmark columns are
+      -- byte offsets, so a multibyte path would otherwise highlight the wrong
+      -- column (or land mid-codepoint and throw). The line has 2 leading spaces.
+      local from = char_to_byte(m.display, pos) + 2
+      local to = char_to_byte(m.display, pos + 1) + 2
+      pcall(
+        vim.api.nvim_buf_set_extmark,
+        state.list_buf,
+        ns,
+        i - 1,
+        from,
+        { end_col = to, hl_group = "HerdrNvimPickerMatch" }
+      )
     end
     if m.right ~= "" then
       local col = #lines[i] - #m.right
@@ -100,24 +172,84 @@ local function render()
       pcall(vim.api.nvim_buf_set_extmark, state.list_buf, ns, i - 1, col, { end_col = #lines[i], hl_group = hl })
     end
   end
-  state.cursor = math.max(1, math.min(state.cursor, #state.matches))
-  if #state.matches > 0 then
-    pcall(vim.api.nvim_win_set_cursor, state.list_win, { state.cursor, 0 })
+  state.cursor = math.max(1, math.min(state.cursor, math.max(1, total)))
+  if total > 0 then
+    pcall(vim.api.nvim_win_set_cursor, state.list_win, { state.cursor - state.top + 1, 0 })
   end
-  local count = spec.query == "" and (#state.matches .. " files") or (#state.matches .. " matches")
-  pcall(vim.api.nvim_win_set_config, state.list_win, { title = " " .. (spec.title or "open file") .. " · " .. count .. " ", title_pos = "center" })
+  local count = spec.query == "" and (total .. " files") or (total .. " matches")
+  pcall(
+    vim.api.nvim_win_set_config,
+    state.list_win,
+    { title = " " .. (spec.title or "open file") .. " · " .. count .. " ", title_pos = "center" }
+  )
 end
 
-local function refilter()
-  local query = vim.trim(vim.api.nvim_buf_get_lines(state.prompt_buf, 0, 1, false)[1] or "")
-  query = query:gsub("^› ?", "")
+local function apply_query(query)
   state.spec.query = query
-  state.matches = P.rank(state.spec.candidates, query, state.spec.max_files)
+  state.pending_query = query
+
+  -- A query that extends the previous one can only match a subset of the
+  -- previous results, so narrow those instead of rescanning every candidate.
+  local pool = state.spec.candidates
+  if
+    query ~= ""
+    and state.last_query
+    and state.last_query ~= ""
+    and #state.last_query < #query
+    and query:sub(1, #state.last_query) == state.last_query
+    and state.last_matches
+  then
+    pool = {}
+    for _, m in ipairs(state.last_matches) do
+      table.insert(pool, m.cand)
+    end
+  end
+
+  state.matches = P.rank(pool, query, state.spec.max_files)
+  state.last_query, state.last_matches = query, state.matches
   state.cursor = 1
+  state.top = 1
   render()
 end
 
+local function refilter()
+  if not (state.prompt_buf and vim.api.nvim_buf_is_valid(state.prompt_buf)) then
+    return
+  end
+  local query = vim.trim(vim.api.nvim_buf_get_lines(state.prompt_buf, 0, 1, false)[1] or "")
+  query = query:gsub("^› ?", "")
+  -- Compare against what is *scheduled*, not what is applied: typing a
+  -- character and deleting it again inside the debounce window would otherwise
+  -- return early here and leave the pending timer to apply the character that
+  -- is no longer in the prompt.
+  if query == state.pending_query then
+    return
+  end
+  state.pending_query = query
+  -- Coalesce bursts of typing: one filter per quiet moment, not per keystroke.
+  if state.debounce then
+    state.debounce:stop()
+  else
+    state.debounce = (vim.uv or vim.loop).new_timer()
+  end
+  state.debounce:start(
+    REFILTER_DEBOUNCE_MS,
+    0,
+    vim.schedule_wrap(function()
+      if is_open() then
+        apply_query(query)
+      end
+    end)
+  )
+end
+
 function P.close()
+  if state.debounce then
+    state.debounce:stop()
+    state.debounce:close()
+    state.debounce = nil
+  end
+  state.last_query, state.last_matches, state.pending_query = nil, nil, nil
   for _, key in ipairs({ "list_win", "prompt_win" }) do
     if state[key] and vim.api.nvim_win_is_valid(state[key]) then
       pcall(vim.api.nvim_win_close, state[key], true)
@@ -134,7 +266,10 @@ local function choose()
     return
   end
   local c = m.cand
-  vim.cmd("drop " .. vim.fn.fnameescape(c.path))
+  if not pcall(vim.cmd, "drop " .. vim.fn.fnameescape(c.path)) then
+    notify("could not open " .. vim.fn.fnamemodify(c.path, ":~:."), vim.log.levels.ERROR)
+    return
+  end
   if c.line then
     local last = vim.api.nvim_buf_line_count(0)
     pcall(vim.api.nvim_win_set_cursor, 0, { math.min(c.line, last), 0 })
@@ -147,7 +282,8 @@ local function move(delta)
     return
   end
   state.cursor = ((state.cursor - 1 + delta) % #state.matches) + 1
-  pcall(vim.api.nvim_win_set_cursor, state.list_win, { state.cursor, 0 })
+  -- render() scrolls the window to keep the cursor visible.
+  render()
 end
 
 --- Open the picker. `spec = { candidates = {...}, cwd = "...", max_files = 20, title = "..." }`
@@ -165,16 +301,24 @@ function P.open(spec, opts)
   if #vim.api.nvim_list_uis() == 0 and not opts.force_without_ui then
     local group = vim.api.nvim_create_augroup("HerdrNvimPickerDeferred", { clear = true })
     local expiry = (vim.uv or vim.loop).new_timer()
+    -- One handle per deferred open, so release it on both exits and drop the
+    -- augroup with it: `once` removes the autocmd but leaves the group behind.
+    local function release()
+      if expiry then
+        expiry:stop()
+        expiry:close()
+        expiry = nil
+      end
+      pcall(vim.api.nvim_del_augroup_by_name, "HerdrNvimPickerDeferred")
+    end
     expiry:start(10000, 0, function()
-      vim.schedule(function()
-        pcall(vim.api.nvim_del_augroup_by_name, "HerdrNvimPickerDeferred")
-      end)
+      vim.schedule(release)
     end)
     vim.api.nvim_create_autocmd("UIEnter", {
       group = group,
       once = true,
       callback = function()
-        expiry:stop()
+        release()
         vim.schedule(function()
           P.open(spec, { force_without_ui = true })
         end)
@@ -182,6 +326,10 @@ function P.open(spec, opts)
     })
     return
   end
+  -- One pass, not two: matchfuzzypos() matches on `display`, so it has to be
+  -- populated for every candidate before ranking, but normalising the JSON
+  -- nulls alongside it halves the work on a large repo.
+  spec.home = vim.env.HOME
   for _, c in ipairs(spec.candidates) do
     if c.line == vim.NIL then
       c.line = nil
@@ -192,19 +340,11 @@ function P.open(spec, opts)
     if c.touched_unix == vim.NIL then
       c.touched_unix = nil
     end
-  end
-  local home = vim.env.HOME
-  for _, c in ipairs(spec.candidates) do
-    c.display = display_path(c.path, spec.cwd, home)
+    c.display = display_path(c.path, spec.cwd, spec.home)
   end
   spec.query = ""
   state.spec = spec
-
-  local hl = vim.api.nvim_set_hl
-  hl(0, "HerdrNvimPickerMatch", { link = "Special", default = true })
-  hl(0, "HerdrNvimPickerDiff", { link = "DiffAdd", default = true })
-  hl(0, "HerdrNvimPickerNew", { link = "DiagnosticVirtualTextWarn", default = true })
-  hl(0, "HerdrNvimPickerAge", { link = "Comment", default = true })
+  state.cursor, state.top = 1, 1
 
   local width = math.max(40, math.min(math.floor(vim.o.columns * 0.9), 100))
   local height = math.max(5, math.min(math.floor(vim.o.lines * 0.5), 20))
@@ -215,8 +355,15 @@ function P.open(spec, opts)
   vim.bo[state.list_buf].bufhidden = "wipe"
   vim.bo[state.list_buf].buftype = "nofile"
   state.list_win = vim.api.nvim_open_win(state.list_buf, false, {
-    relative = "editor", width = width, height = height, row = row + 2, col = col,
-    style = "minimal", border = "rounded", title = " open file ", title_pos = "center",
+    relative = "editor",
+    width = width,
+    height = height,
+    row = row + 2,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " open file ",
+    title_pos = "center",
   })
   vim.wo[state.list_win].cursorline = true
 
@@ -224,8 +371,15 @@ function P.open(spec, opts)
   vim.bo[state.prompt_buf].bufhidden = "wipe"
   vim.bo[state.prompt_buf].buftype = "nofile"
   state.prompt_win = vim.api.nvim_open_win(state.prompt_buf, true, {
-    relative = "editor", width = width, height = 1, row = row, col = col,
-    style = "minimal", border = "rounded", title = " ↑↓ move · ⏎ open · esc close ", title_pos = "center",
+    relative = "editor",
+    width = width,
+    height = 1,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " ↑↓ move · ⏎ open · esc close ",
+    title_pos = "center",
   })
   vim.api.nvim_buf_set_lines(state.prompt_buf, 0, -1, false, { "› " })
 
@@ -235,10 +389,18 @@ function P.open(spec, opts)
   map({ "i", "n" }, "<CR>", choose)
   map({ "i", "n" }, "<Esc>", P.close)
   map({ "i", "n" }, "<C-c>", P.close)
-  map({ "i", "n" }, "<Down>", function() move(1) end)
-  map({ "i", "n" }, "<Up>", function() move(-1) end)
-  map({ "i", "n" }, "<C-n>", function() move(1) end)
-  map({ "i", "n" }, "<C-p>", function() move(-1) end)
+  map({ "i", "n" }, "<Down>", function()
+    move(1)
+  end)
+  map({ "i", "n" }, "<Up>", function()
+    move(-1)
+  end)
+  map({ "i", "n" }, "<C-n>", function()
+    move(1)
+  end)
+  map({ "i", "n" }, "<C-p>", function()
+    move(-1)
+  end)
   map({ "i", "n" }, "<C-u>", function()
     vim.api.nvim_buf_set_lines(state.prompt_buf, 0, -1, false, { "› " })
     refilter()
@@ -246,16 +408,24 @@ function P.open(spec, opts)
   map("n", "q", P.close)
 
   local group = vim.api.nvim_create_augroup("HerdrNvimPicker", { clear = true })
-  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, { group = group, buffer = state.prompt_buf, callback = refilter })
-  vim.api.nvim_create_autocmd("WinLeave", { group = group, buffer = state.prompt_buf, callback = function()
-    vim.schedule(function()
-      if is_open() and vim.api.nvim_get_current_win() ~= state.prompt_win then
-        P.close()
-      end
-    end)
-  end })
+  vim.api.nvim_create_autocmd(
+    { "TextChangedI", "TextChanged" },
+    { group = group, buffer = state.prompt_buf, callback = refilter }
+  )
+  vim.api.nvim_create_autocmd("WinLeave", {
+    group = group,
+    buffer = state.prompt_buf,
+    callback = function()
+      vim.schedule(function()
+        if is_open() and vim.api.nvim_get_current_win() ~= state.prompt_win then
+          P.close()
+        end
+      end)
+    end,
+  })
 
-  refilter()
+  -- Populate synchronously; the debounce exists for typing, not for opening.
+  apply_query("")
   vim.api.nvim_win_set_cursor(state.prompt_win, { 1, 2 })
   vim.cmd("startinsert!")
 end

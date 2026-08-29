@@ -43,22 +43,79 @@ local function define_highlights()
   hl(0, "HerdrNvimListLoc", { link = "Directory", default = true })
   hl(0, "HerdrNvimStale", { link = "Comment", default = true })
   hl(0, "HerdrNvimDelivered", { link = "DiagnosticVirtualTextOk", default = true })
+  -- Defined here rather than in picker.open so they are re-applied on
+  -- ColorScheme like the rest, and can be overridden before the first open.
+  hl(0, "HerdrNvimPickerMatch", { link = "Special", default = true })
+  hl(0, "HerdrNvimPickerDiff", { link = "DiffAdd", default = true })
+  hl(0, "HerdrNvimPickerNew", { link = "DiagnosticVirtualTextWarn", default = true })
+  hl(0, "HerdrNvimPickerAge", { link = "Comment", default = true })
 end
 
 local keymaps = {
-  { "n", "<leader>ac", function() M.annotate() end, "comment the current line" },
+  {
+    "n",
+    "<leader>ac",
+    function()
+      M.annotate()
+    end,
+    "comment the current line",
+  },
   -- `:` from Visual mode inserts the '<,'> range itself; the command takes it.
   { "x", "<leader>ac", ":HerdrAnnotate<CR>", "comment the selection" },
-  { "n", "<leader>al", function() M.list() end, "list annotations" },
-  { "n", "<leader>as", function() M.paste() end, "paste annotations into the agent's input" },
-  { "n", "<leader>aS", function() M.send() end, "send annotations to the agent" },
-  { "n", "<leader>af", function() M.pick_file() end, "pick a file the agent touched" },
-  { "n", "]a", function() M.next() end, "next annotation" },
-  { "n", "[a", function() M.prev() end, "previous annotation" },
+  {
+    "n",
+    "<leader>al",
+    function()
+      M.list()
+    end,
+    "list annotations",
+  },
+  {
+    "n",
+    "<leader>as",
+    function()
+      M.paste()
+    end,
+    "paste annotations into the agent's input",
+  },
+  {
+    "n",
+    "<leader>aS",
+    function()
+      M.send()
+    end,
+    "send annotations to the agent",
+  },
+  {
+    "n",
+    "<leader>af",
+    function()
+      M.pick_file()
+    end,
+    "pick a file the agent touched",
+  },
+  {
+    "n",
+    "]a",
+    function()
+      M.next()
+    end,
+    "next annotation",
+  },
+  {
+    "n",
+    "[a",
+    function()
+      M.prev()
+    end,
+    "previous annotation",
+  },
 }
 
 local function is_ours(mapping)
-  return type(mapping) == "table" and type(mapping.desc) == "string" and mapping.desc:sub(1, #DESC_PREFIX) == DESC_PREFIX
+  return type(mapping) == "table"
+    and type(mapping.desc) == "string"
+    and mapping.desc:sub(1, #DESC_PREFIX) == DESC_PREFIX
 end
 
 local function apply_keymaps(mode)
@@ -104,6 +161,16 @@ local function non_floating_windows()
 end
 
 local title_timer, last_title = nil, nil
+
+--- Release the debounce handle. libuv timers must be closed, not just stopped.
+local function stop_title_timer()
+  if title_timer then
+    title_timer:stop()
+    title_timer:close()
+    title_timer = nil
+  end
+end
+
 local function report_title()
   if title_timer then
     title_timer:stop()
@@ -164,6 +231,17 @@ local function setup_daemon_features()
     })
     report_title()
   end
+  -- libuv handles outlive the Lua values that hold them, so hand them back
+  -- explicitly rather than relying on process teardown.
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      stop_title_timer()
+      pcall(function()
+        require("herdr-nvim.reload").stop()
+      end)
+    end,
+  })
 end
 
 function M.setup(opts)
@@ -272,12 +350,20 @@ function M.statusline()
 end
 
 local function goto_item(item)
+  -- Reached from the ]a / [a keymaps, so nothing here may throw: A.list keeps
+  -- items whose buffer has since been wiped.
+  if not (item and item.buf and vim.api.nvim_buf_is_valid(item.buf)) then
+    notify("that annotation's buffer is gone", vim.log.levels.WARN)
+    return
+  end
   local win = vim.api.nvim_get_current_win()
   if vim.api.nvim_win_get_buf(win) ~= item.buf then
-    local ok = pcall(vim.api.nvim_win_set_buf, win, item.buf)
-    if not ok then
-      vim.cmd("vsplit")
-      vim.api.nvim_win_set_buf(0, item.buf)
+    -- 'winfixbuf' and friends can refuse the swap; fall back to a split.
+    if not pcall(vim.api.nvim_win_set_buf, win, item.buf) then
+      if not pcall(vim.cmd, "vsplit") or not pcall(vim.api.nvim_win_set_buf, 0, item.buf) then
+        notify("could not open that annotation's buffer here", vim.log.levels.WARN)
+        return
+      end
     end
   end
   local last = vim.api.nvim_buf_line_count(item.buf)
@@ -356,7 +442,10 @@ local function deliver(mode, target, force)
   local data = payload()
   if #data.comments == 0 then
     if A.total() > 0 then
-      notify("nothing pending: remaining annotations are stale or already delivered (:HerdrClear to forget them)", vim.log.levels.WARN)
+      notify(
+        "nothing pending: remaining annotations are stale or already delivered (:HerdrClear to forget them)",
+        vim.log.levels.WARN
+      )
     else
       notify("no annotations to send", vim.log.levels.WARN)
     end
@@ -374,7 +463,12 @@ local function deliver(mode, target, force)
   end
   M._inflight = true
   bridge.run(M.config, args, bridge.encode(data), function(ok, res)
-    M._inflight = false
+    -- Stays held while the agent picker below is open: clearing it here let a
+    -- second <leader>aS start another send behind the prompt.
+    -- `res` is an error string when `ok` is false; indexing it yields nil.
+    if not (ok and res.needs_pick) then
+      M._inflight = false
+    end
     if not ok then
       notify(tostring(res), vim.log.levels.ERROR)
       return
@@ -388,6 +482,7 @@ local function deliver(mode, target, force)
           return c.label or c.pane_id or "?"
         end,
       }, function(choice)
+        M._inflight = false
         if not choice then
           notify("send cancelled")
           return
@@ -418,8 +513,17 @@ local function deliver(mode, target, force)
     end
     local verb = mode == "submit" and "sent" or "pasted"
     local via = (mode == "submit" and res.via and res.via ~= "agent.prompt") and " (raw input)" or ""
-    notify(("%s %d annotation%s to %s (%s)%s"):format(verb, count, count == 1 and "" or "s", t.agent or "agent", t.pane_id or "?", via))
-  end)
+    notify(
+      ("%s %d annotation%s to %s (%s)%s"):format(
+        verb,
+        count,
+        count == 1 and "" or "s",
+        t.agent or "agent",
+        t.pane_id or "?",
+        via
+      )
+    )
+  end, { label = "sending annotations" })
 end
 
 --- Paste all annotations into the agent's input without submitting.
@@ -450,11 +554,12 @@ function M.preview()
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false
     vim.bo[buf].filetype = "markdown"
-    vim.api.nvim_buf_set_name(buf, "herdr-nvim://preview")
+    -- A previous preview split left open still owns this name; E95 otherwise.
+    pcall(vim.api.nvim_buf_set_name, buf, "herdr-nvim://preview")
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(res.prompt or "", "\n", { plain = true }))
     vim.bo[buf].modifiable = false
     vim.keymap.set("n", "q", "<Cmd>close<CR>", { buffer = buf, nowait = true })
-  end)
+  end, { label = "building the preview" })
 end
 
 --- Fuzzy-pick a file the agent touched this session (or any repo file).
@@ -486,7 +591,7 @@ function M.pick_file(target)
       return
     end
     require("herdr-nvim.picker").open(res.handoff, { force_without_ui = true })
-  end)
+  end, { label = "gathering files" })
 end
 
 --- List agent candidates: `callback(list)`; notifies when no callback.
@@ -516,7 +621,7 @@ function M.agents(callback, quiet)
       table.insert(lines, c.label)
     end
     vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
-  end)
+  end, { label = quiet and nil or "listing agents" })
 end
 
 return M

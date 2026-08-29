@@ -3,7 +3,8 @@
 local UI = {}
 local A = require("herdr-nvim.annotations")
 
-local state = { win = nil, buf = nil, items = {}, origin = nil, preview = nil, committed = false, target_win = nil, warned = false }
+local state =
+  { win = nil, buf = nil, items = {}, origin = nil, preview = nil, committed = false, target_win = nil, warned = false }
 local list_ns = vim.api.nvim_create_namespace("herdr-nvim-list")
 
 local function notify(msg, level)
@@ -19,6 +20,35 @@ end
 
 local function is_open()
   return state.win ~= nil and vim.api.nvim_win_is_valid(state.win)
+end
+
+local jump_timer = nil
+local JUMP_DEBOUNCE_MS = 50
+
+--- Preview the hovered annotation, at most once per quiet moment.
+local function schedule_jump()
+  if jump_timer then
+    jump_timer:stop()
+  else
+    jump_timer = vim.uv.new_timer()
+  end
+  jump_timer:start(
+    JUMP_DEBOUNCE_MS,
+    0,
+    vim.schedule_wrap(function()
+      if is_open() then
+        UI.jump()
+      end
+    end)
+  )
+end
+
+local function stop_jump_timer()
+  if jump_timer then
+    jump_timer:stop()
+    jump_timer:close()
+    jump_timer = nil
+  end
 end
 
 local function normal_window(win)
@@ -127,6 +157,7 @@ end
 --- Close the list. Restores the origin window unless the jump was committed.
 function UI.close(opts)
   opts = opts or {}
+  stop_jump_timer()
   if is_open() then
     pcall(vim.api.nvim_win_close, state.win, true)
   end
@@ -170,6 +201,9 @@ function UI.jump()
       end
       return
     end
+  end
+  if not vim.api.nvim_buf_is_valid(item.buf) then
+    return
   end
   local last = vim.api.nvim_buf_line_count(item.buf)
   pcall(vim.api.nvim_win_set_cursor, win, { math.min(item.row + 1, last), 0 })
@@ -217,7 +251,7 @@ function UI.delete()
     return
   end
   local lines = render()
-  vim.api.nvim_win_set_cursor(state.win, { math.min(row, #lines), 0 })
+  pcall(vim.api.nvim_win_set_cursor, state.win, { math.min(row, #lines), 0 })
   UI.jump()
 end
 
@@ -288,7 +322,10 @@ function UI.open(opts)
   end)
 
   local group = vim.api.nvim_create_augroup("HerdrNvimList", { clear = true })
-  vim.api.nvim_create_autocmd("CursorMoved", { group = group, buffer = state.buf, callback = UI.jump })
+  -- UI.jump swaps a real file into the preview window, which under a full
+  -- config drags treesitter and LSP attach along with it. Holding j through a
+  -- long list would do that once per row, so coalesce.
+  vim.api.nvim_create_autocmd("CursorMoved", { group = group, buffer = state.buf, callback = schedule_jump })
   vim.api.nvim_create_autocmd("WinLeave", {
     group = group,
     buffer = state.buf,

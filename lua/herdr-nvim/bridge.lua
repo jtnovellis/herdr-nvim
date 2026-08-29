@@ -48,8 +48,37 @@ local function decode(out)
   return value
 end
 
+-- Only announce a call that is actually slow: most return in a few
+-- milliseconds and a message for those would be pure noise. Below this, the
+-- user sees nothing; above it, they learn what is being waited on instead of
+-- staring at a frozen editor for the full 10s timeout.
+local PENDING_NOTICE_MS = 400
+
+--- Say what we are waiting for, once the wait becomes noticeable.
+--- Returns a function that cancels the pending notice.
+local function announce_slow(label)
+  local timer = vim.uv.new_timer()
+  local shown = false
+  timer:start(
+    PENDING_NOTICE_MS,
+    0,
+    vim.schedule_wrap(function()
+      shown = true
+      require("herdr-nvim").notify(label .. "\u{2026}")
+    end)
+  )
+  return function()
+    timer:stop()
+    timer:close()
+    return shown
+  end
+end
+
 --- Run `herdr-nvim <args>` asynchronously. `callback(ok, result_or_error)`
 --- receives the decoded JSON printed by the binary.
+---
+--- `opts.label` names the operation for the slow-call notice; pass nil to stay
+--- silent (the pane-title updates do, since they fire on every buffer switch).
 function M.run(config, args, stdin, callback, opts)
   opts = opts or {}
   local bin = M.binary(config)
@@ -63,8 +92,10 @@ function M.run(config, args, stdin, callback, opts)
   if stdin then
     sys_opts.stdin = stdin
   end
+  local cancel_notice = opts.label and announce_slow(opts.label) or function() end
   local ok, err = pcall(vim.system, cmd, sys_opts, function(res)
     vim.schedule(function()
+      cancel_notice()
       local out = vim.trim(res.stdout or "")
       local decoded = decode(out)
       if decoded == nil then
@@ -80,6 +111,7 @@ function M.run(config, args, stdin, callback, opts)
     end)
   end)
   if not ok then
+    cancel_notice()
     callback(false, tostring(err))
   end
 end
