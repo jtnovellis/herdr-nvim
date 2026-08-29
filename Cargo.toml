@@ -1,6 +1,6 @@
 [package]
 name = "herdr-nvim"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Neovim integration for Herdr: per-tab nvim sidebars backed by headless daemons, and code annotations you can send to any agent in the workspace"

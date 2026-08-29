@@ -96,14 +96,12 @@ fn session_text(info: &PaneInfo, cwd: &Path) -> (String, String) {
         return (String::new(), String::new());
     };
     let agent = session.agent.clone().unwrap_or_default();
-    let path = match (session.kind.as_deref(), session.value.as_deref()) {
-        (Some("path"), Some(value)) => Some(PathBuf::from(value)),
-        (Some("id"), Some(id)) if agent == "claude" => {
-            let cwds: Vec<&Path> = vec![cwd];
-            sessions::claude_session_path(id, &cwds)
-        }
-        _ => None,
-    };
+    let path = sessions::session_path_for(
+        session.kind.as_deref(),
+        session.value.as_deref(),
+        &agent,
+        &[cwd],
+    );
     match path {
         Some(path) => (agent, sessions::read_session_text(&path)),
         None => (agent, String::new()),

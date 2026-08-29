@@ -8,11 +8,12 @@
 use crate::config::Config;
 use crate::context::Context;
 use crate::git::{self, GitInfo};
-use crate::herdr::Herdr;
+use crate::herdr::{self, Herdr};
 use crate::send::{
     candidates, coded, deliver, describe, error_json, paths_should_be_absolute, precheck,
     read_stdin_or_file, relative_path, resolve_target, truncate_code, Resolution,
 };
+use crate::sessions;
 use anyhow::{bail, Context as _, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -182,12 +183,17 @@ fn ask_inner(opts: &AskArgs) -> Result<Value> {
     // Re-check right before delivery: state can change after `agent list`. A
     // remembered target that has since gone reports `agent_not_found`, which is
     // the Lua side's cue to forget it and resolve again.
-    match herdr.agent_get(&target.pane_id) {
+    let session = match herdr.agent_get(&target.pane_id) {
         Ok(Some(fresh)) => {
             if let Some(status) = fresh.agent_status.clone() {
                 target.status = status;
             }
+            // Where the reply will land. Read *before* delivering: the offset
+            // has to be the length as it was when we sent, or the tail would
+            // skip the first lines of the answer.
+            let marker = session_marker(&fresh, &cwd);
             precheck(&target, fresh.launch_pending.unwrap_or(false), opts.force)?;
+            marker
         }
         Ok(None) => {
             return Err(coded(
@@ -196,7 +202,7 @@ fn ask_inner(opts: &AskArgs) -> Result<Value> {
             ))
         }
         Err(err) => return Err(err.context("cannot check the agent's state")),
-    }
+    };
 
     let absolute = paths_should_be_absolute(repo_root, &cwd, target.cwd.as_deref());
     let prompt = build_ask_prompt(
@@ -217,7 +223,39 @@ fn ask_inner(opts: &AskArgs) -> Result<Value> {
         "mode": if opts.paste { "paste" } else { "submit" },
         "via": via,
         "target": target,
+        "session": session,
     }))
+}
+
+/// `{path, offset, agent}` for the agent's transcript, or `null` when Herdr
+/// tracks no session we can resolve (an agent kind with no parser, or one
+/// reporting an id we cannot turn into a file). A null marker is not an
+/// error: the caller simply gets no reply view, exactly as before.
+fn session_marker(fresh: &herdr::AgentInfo, cwd: &Path) -> Value {
+    let Some(session) = &fresh.agent_session else {
+        return Value::Null;
+    };
+    let agent = session.agent.clone().unwrap_or_default();
+    let agent_cwd = fresh.cwd.as_deref().map(Path::new);
+    let mut cwds: Vec<&Path> = vec![cwd];
+    if let Some(agent_cwd) = agent_cwd {
+        if agent_cwd != cwd {
+            cwds.push(agent_cwd);
+        }
+    }
+    let Some(path) = sessions::session_path_for(
+        session.kind.as_deref(),
+        session.value.as_deref(),
+        &agent,
+        &cwds,
+    ) else {
+        return Value::Null;
+    };
+    json!({
+        "path": path.to_string_lossy(),
+        "offset": crate::tail::offset_of(&path),
+        "agent": agent,
+    })
 }
 
 /// One message for the agent. `absolute_for` names the agent cwd when the path

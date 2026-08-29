@@ -86,6 +86,11 @@ pub struct AgentInfo {
     pub foreground_cwd: Option<String>,
     #[serde(default)]
     pub launch_pending: Option<bool>,
+    /// The transcript Herdr tracks for this agent, when it tracks one. This is
+    /// the only route to the agent's actual words: `agent.prompt` answers with
+    /// lifecycle state, never text.
+    #[serde(default)]
+    pub agent_session: Option<AgentSession>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -588,6 +593,12 @@ impl Herdr {
 
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<Value> {
         self.rpc("agent.prompt", json!({ "target": target, "text": text }))
+    }
+
+    /// Re-read `config.toml` in the running server, so a key written by
+    /// `setup-keys` works without restarting Herdr.
+    pub fn reload_config(&self) -> Result<()> {
+        self.rpc("server.reload_config", json!({})).map(|_| ())
     }
 
     pub fn agent_focus(&self, target: &str) -> Result<()> {

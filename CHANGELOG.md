@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The agent's answer now comes back to Neovim.** `<leader>ac` opens a float
+  that does not take your focus, showing what the agent is doing and then what
+  it said; `q` closes it and `:HerdrReplyView` moves into it. The claim this
+  replaces — that `agent.prompt` answers with lifecycle state and never text,
+  so there was nothing to stream back — was true of that call and wrong about
+  the platform. Herdr reports the transcript behind every agent pane, and it
+  is append-only, so `ask` now records its length at the moment it sends and
+  everything past that offset is the reply to that message. The transcript is
+  written a message at a time, so the reply arrives whole rather than
+  streaming, and only Claude Code and pi transcripts can be read today; for
+  any other agent nothing opens and its own pane stays the place to read.
+  New option `reply = { enabled = true }`; `focus_after_ask` now defaults to
+  `false`.
+- **Live agent status.** The plugin subscribes to Herdr's
+  `pane.agent_status_changed` and `pane.agent_detected` and pushes the state
+  into the tab's Neovim, so the statusline shows `◑ working`, `⏸ blocked` or
+  `✓ done` without polling. New `User` autocommands `HerdrNvimAgentStatus`,
+  `HerdrNvimAgentReply` and `HerdrNvimReviewChanged`, all carrying a payload
+  (`HerdrNvimAnnotationsChanged` still carries none).
+- **Step through what the agent changed.** The same transcript records every
+  edit with its before and after, so they are marked where they landed: `]r`
+  and `[r` move between them, `<leader>au` puts one back the way it was and
+  `<leader>ak` clears the mark. Reverting refuses when the text is no longer
+  what the agent wrote, so it cannot clobber an edit of your own, and a file
+  the agent created says it has nothing to revert to. New option
+  `review = { enabled = true }`, commands `:HerdrNextEdit`, `:HerdrPrevEdit`,
+  `:HerdrRevertEdit`, `:HerdrKeepEdit`, `:HerdrKeepEdits`, and highlights
+  `HerdrNvimReview`/`HerdrNvimReviewVirt`. `]r`/`[r` rather than `]h`/`[h`,
+  which gitsigns takes buffer-locally in most configurations.
+- **`herdr plugin action invoke herdr-nvim setup-keys`** binds `prefix+e` and
+  `prefix+f`. A manifest cannot declare keybindings, so a fresh install left
+  the sidebar reachable only through `plugin action invoke`. It backs up
+  `config.toml` first, skips any key already bound to something else, and
+  reloads the config so the keys work straight away; `:checkhealth` now names
+  it instead of describing the problem. `startup` also seeds `config.env` from
+  `config.env.example` the first time, so the documented knobs exist where
+  they are read. Neither ever overwrites what is already there.
+- `@` in the ask composer attaches another file, through the existing file
+  picker rather than a second one. `<leader>at` and `<leader>ag` reach
+  `:HerdrAskTarget` and `:HerdrAgents`, which had no mappings.
+- `herdr-nvim tail --path P [--agent KIND] [--from BYTES]` prints what an agent
+  said and edited past a byte offset in its transcript, as JSON.
+
+### Changed
+
+- `focus_after_ask` defaults to `false`: the agent's pane was focused because
+  there was nowhere else to read the answer, and now there is.
+
 ## [0.1.0] - 2026-08-29
 
 The first published release: per-tab Neovim sidebars backed by headless

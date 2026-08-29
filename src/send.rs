@@ -622,6 +622,7 @@ mod tests {
             cwd: Some("/repo".into()),
             foreground_cwd: None,
             launch_pending: None,
+            agent_session: None,
         }
     }
 

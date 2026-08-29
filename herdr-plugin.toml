@@ -1,6 +1,6 @@
 id = "herdr-nvim"
 name = "Herdr Neovim"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.8.2"
 description = "Per-tab Neovim sidebars backed by headless daemons. Ask an agent about the code you are looking at, or queue annotations and send them as one review."
 platforms = ["linux", "macos"]
@@ -55,6 +55,16 @@ description = "Fuzzy-pick a file the agent touched this session (or any repo fil
 contexts = ["pane"]
 command = ["./target/release/herdr-nvim", "pick-file"]
 
+# A manifest cannot declare keybindings -- those live in the user's own
+# config.toml -- so this offers to write them. It backs the file up first and
+# refuses a key that is already bound to something else.
+[[actions]]
+id = "setup-keys"
+title = "Bind keys for the Neovim sidebar"
+description = "Add prefix+e (toggle) and prefix+f (file picker) to your Herdr config, then reload it."
+contexts = ["global"]
+command = ["./target/release/herdr-nvim", "setup-keys"]
+
 [[actions]]
 id = "gc"
 title = "Clean up Neovim daemons"
@@ -74,6 +84,17 @@ command = ["./target/release/herdr-nvim", "event"]
 # A sidebar closed through Herdr itself: forget the pane, keep the daemon.
 [[events]]
 on = "pane.closed"
+command = ["./target/release/herdr-nvim", "event"]
+
+# What the agent is doing, pushed into the tab's Neovim as it changes: the
+# statusline and the reply view both read it. Herdr's payload names the pane
+# and workspace but not the tab, so the handler resolves that itself.
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./target/release/herdr-nvim", "event"]
+
+[[events]]
+on = "pane.agent_detected"
 command = ["./target/release/herdr-nvim", "event"]
 
 # The sidebar pane attaches a `nvim --remote-ui` client to the tab's daemon.

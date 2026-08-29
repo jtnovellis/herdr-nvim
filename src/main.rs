@@ -22,8 +22,10 @@ mod msgpack;
 mod pick;
 mod send;
 mod sessions;
+mod setup;
 mod sidebar;
 mod state;
+mod tail;
 
 use anyhow::{bail, Result};
 
@@ -39,6 +41,7 @@ const UI_COMMANDS: &[&str] = &[
     "event",
     "startup",
     "gc",
+    "setup-keys",
 ];
 
 fn main() {
@@ -74,10 +77,16 @@ fn run(args: &[String]) -> Result<i32> {
         "title" => sidebar::title(rest),
         "sidebar" => sidebar::run_sidebar(),
         "event" => daemon::handle_event(),
-        "startup" | "gc" => daemon::gc(),
+        "startup" => {
+            setup::ensure_config_env();
+            daemon::gc()
+        }
+        "gc" => daemon::gc(),
         "send" => send::send(rest),
         "ask" => ask::ask(rest),
         "agents" => send::list_agents(rest),
+        "tail" => tail::tail(rest),
+        "setup-keys" => setup::setup_keys(rest),
         "status" => state::print_status(),
         "version" | "--version" | "-V" => {
             println!("herdr-nvim {}", env!("CARGO_PKG_VERSION"));
@@ -112,6 +121,9 @@ Sidebar (herdr actions):
 Daemons:
   event               Event hook: stop daemons of closed tabs/workspaces
   startup | gc        Stop orphaned daemons, forget dead ones, re-check sidebars
+  setup-keys [--force]
+                      Bind prefix+e/prefix+f to the sidebar in your Herdr
+                      config; backs it up first and never takes a bound key
   status              Print daemon state as JSON
 
 Agents (used by the Neovim plugin):
@@ -122,7 +134,10 @@ Agents (used by the Neovim plugin):
   send [--submit|--paste] [--target T] [--force] [--focus] [--file PATH] [--dry-run]
                       Read annotations JSON from stdin (or --file) and paste
                       them into an agent's input; --submit presses Enter
-  title [TEXT]        Show TEXT as the sidebar pane title (empty clears it)",
+  title [TEXT]        Show TEXT as the sidebar pane title (empty clears it)
+  tail --path P [--agent KIND] [--from BYTES]
+                      Print what the agent said and edited past BYTES in its
+                      transcript, as JSON",
         version = env!("CARGO_PKG_VERSION")
     );
 }

@@ -15,8 +15,16 @@ Neovim integration for [Herdr](https://herdr.dev).
 - **Ask the agent about the code you are looking at.** Select lines (or just
   sit on one), `<leader>ac`, type a message, `⌃s` — it goes straight to any
   agent in the workspace (Claude Code, Codex, pi, OpenCode, …) with
-  `file:line`, the code and git context attached. The reply appears in the
-  agent's own Herdr pane. `<leader>ar` keeps the conversation going.
+  `file:line`, the code and git context attached. `@` in the composer attaches
+  another file. `<leader>ar` keeps the conversation going.
+- **The answer comes back here.** A float that does not take your focus shows
+  what the agent is doing (`◑ working`, `⏸ waiting for you`, `✓ done`) and then
+  what it said. Your statusline shows the same thing, so you know whether the
+  agent is busy without looking away from the code.
+- **Step through what the agent changed.** Its edits are marked where they
+  landed; `]r` / `[r` move between them, `<leader>au` puts one back the way it
+  was, `<leader>ak` marks it reviewed. It refuses to revert a hunk you have
+  since edited yourself.
 - **Code annotations for a batch review.** When you want to mark up several
   places first and send them as one request, comment lines or selections and
   flush the queue with `<leader>aS`.
@@ -70,10 +78,20 @@ cargo build --release
 herdr plugin link .
 ```
 
-Bind the toggle in your Herdr `config.toml`. Herdr's built-in
-`edit_scrollback` action uses `prefix+e` by default (it opens the pane's
-scrollback in `$EDITOR`, which looks like "nvim without my project"), so move
-it when you take that key:
+Bind the keys. A plugin manifest cannot declare keybindings — those live in
+your own `config.toml` — so run this once:
+
+```sh
+herdr plugin action invoke herdr-nvim setup-keys
+```
+
+It adds `prefix+e` (toggle) and `prefix+f` (file picker), backs the file up
+first, skips any key you already use, and reloads the config so they work
+straight away. `:checkhealth herdr-nvim` tells you when they are missing.
+
+To do it yourself instead: Herdr's built-in `edit_scrollback` action uses
+`prefix+e` by default (it opens the pane's scrollback in `$EDITOR`, which
+looks like "nvim without my project"), so move it when you take that key:
 
 ```toml
 [keys]
@@ -281,6 +299,8 @@ Select the lines you want to talk about (or just sit on one), press
 | --- | --- |
 | `<leader>ac` | ask about the current line / visual selection |
 | `<leader>ar` | follow up, with no code attached |
+| `<leader>at` | choose which agent to ask |
+| `<leader>ag` | list the agents visible from here |
 
 Inside the composer:
 
@@ -288,6 +308,7 @@ Inside the composer:
 | --- | --- |
 | `⌃s` | send |
 | `⏎` (normal mode) | send |
+| `@` (insert mode) | attach another file, through the file picker |
 | `⌃c`, or `⎋` from normal mode | cancel |
 
 `⌃s` is XON/XOFF flow control on a terminal that has not run `stty -ixon`, so
@@ -318,11 +339,44 @@ has the code from the turn before, and repeating the header only muddies it.
 
 ### Where the reply goes
 
-In the agent's own Herdr pane, not in Neovim. That is not a shortcut: Herdr's
-`agent.prompt` types a string into the agent's PTY and answers with lifecycle
-state, never text. There is no conversation object and no streaming to read
-back, so the pane beside your sidebar *is* the transcript. `focus_after_ask`
-(on by default) focuses it so you watch the answer arrive.
+Into a float in Neovim that does not take your focus, so you can keep working
+while it fills in. `q` or `⎋` closes it; `:HerdrReplyView` moves into it to
+scroll or copy.
+
+The route is roundabout, because `agent.prompt` types a string into the
+agent's PTY and answers with lifecycle state, never text — the call that sends
+cannot also return the answer. The answer is still readable: Herdr reports the
+transcript file behind every agent pane, and that file is append-only, so
+`ask` records its length at the moment it sends and everything past that
+offset is the reply to that message. Herdr also pushes
+`pane.agent_status_changed` as the agent picks the work up and puts it down,
+which is what the status in the float and the statusline is.
+
+Two caveats worth knowing. The transcript is written a message at a time, so
+the reply arrives in one piece rather than streaming word by word. And it only
+works for agents whose transcript format herdr-nvim can read — Claude Code and
+pi today; for anything else `session` comes back null, no float opens, and the
+agent's own pane is the place to read, exactly as before. Set
+`reply = { enabled = false }` to always read there instead, or
+`focus_after_ask = true` to have that pane focused for you.
+
+### Reviewing what the agent changed
+
+The same transcript records every edit, with the text before and after. Those
+land as marks in the buffer where the change is:
+
+| Mapping | Action |
+| --- | --- |
+| `]r` / `[r` | next / previous edit the agent made |
+| `<leader>au` | undo the edit under the cursor |
+| `<leader>ak` | keep it — clear the mark |
+
+By the time a mark appears the edit is already on disk, so `<leader>au`
+*reverts* rather than declines it. It refuses when the text under the mark is
+no longer what the agent wrote, so it can never clobber an edit of your own.
+A file the agent created has nothing to revert to and says so.
+
+Set `review = { enabled = false }` to turn the marks off.
 
 ### Which agent
 
@@ -412,18 +466,36 @@ Enter.
 ### Statusline
 
 ```lua
-require("herdr-nvim").statusline()  -- "● 3" while comments are pending, else ""
+require("herdr-nvim").statusline()  -- "◑ claude ~2 ● 3", or "" when nothing is happening
 ```
 
-The plugin fires `User HerdrNvimAnnotationsChanged` whenever the set changes:
+Three parts, each shown only when it has something to say: what the agent is
+doing (`◑` working, `⏸` blocked, `✓` done — an idle agent shows nothing), how
+many of its edits you have not reviewed, and how many comments are queued.
+
+Four `User` autocommands drive it. `HerdrNvimAnnotationsChanged` carries no
+payload; the other three do, so a listener needs no follow-up call:
+
+| Event | `ev.data` |
+| --- | --- |
+| `HerdrNvimAnnotationsChanged` | — |
+| `HerdrNvimAgentStatus` | `{ pane_id, agent, status, at }` |
+| `HerdrNvimAgentReply` | `{ pane_id, reply, edits }` |
+| `HerdrNvimReviewChanged` | `{ count }` |
 
 ```lua
+local events = {
+  "User HerdrNvimAnnotationsChanged",
+  "User HerdrNvimAgentStatus",
+  "User HerdrNvimReviewChanged",
+}
 -- lualine
 sections = { lualine_x = { require("herdr-nvim").statusline } },
-options = { refresh = { events = { "User HerdrNvimAnnotationsChanged" } } },
+options = { refresh = { events = events } },
 -- heirline
 { provider = function() return require("herdr-nvim").statusline() end,
-  update = { "User", pattern = "HerdrNvimAnnotationsChanged" } },
+  update = { "User", pattern = { "HerdrNvimAnnotationsChanged",
+                                "HerdrNvimAgentStatus", "HerdrNvimReviewChanged" } } },
 ```
 
 ### Setup options
@@ -435,7 +507,9 @@ require("herdr-nvim").setup({
   prompt = "Comment: ",
   ask_height = 5,            -- initial composer height; it grows as you type
   ask_send_key = "<C-s>",    -- <CR> in normal mode always sends too
-  focus_after_ask = true,    -- focus the agent pane so you see the reply arrive
+  focus_after_ask = false,   -- focus the agent pane instead of reading the reply here
+  reply = { enabled = true },   -- show the agent's answer in a float
+  review = { enabled = true },  -- mark the agent's edits; ]r / [r to step
   clear_on_send = true,      -- forget comments after <leader>aS
   clear_on_paste = false,    -- after <leader>as: keep them, marked delivered
   focus_after_send = false,  -- jump to the agent pane after delivery
@@ -453,7 +527,8 @@ Default mappings never override an existing mapping on the same keys (use
 `keymaps = "force"`). Set `vim.g.herdr_nvim_no_defaults = true` before the
 plugin loads to skip the automatic `setup()`. Highlights: `HerdrNvimAskRange`,
 `HerdrNvimAnnotation`, `HerdrNvimSign`, `HerdrNvimVirt`, `HerdrNvimListLoc`,
-`HerdrNvimStale`, `HerdrNvimDelivered`.
+`HerdrNvimStale`, `HerdrNvimDelivered`, `HerdrNvimReview`,
+`HerdrNvimReviewVirt`.
 
 ### Reloading agent edits
 

@@ -21,6 +21,29 @@ pub(crate) struct RawEvent {
     pub unix_ts: Option<u64>,
 }
 
+/// Where a tool call keeps its before/after text. `Edit`-shaped calls carry
+/// either a single `old`/`new` pair or an `edits` array of them; `Write`-shaped
+/// calls carry whole-file `content` and no "before" at all.
+pub(crate) struct EditKeys {
+    /// JSON pointer, relative to a content item, to the argument object
+    /// (`/input` for claude, `/arguments` for pi).
+    args: &'static str,
+    old: &'static str,
+    new: &'static str,
+    edits: &'static str,
+    content: &'static str,
+}
+
+/// One before/after pair the agent wrote. `old` is `None` for a whole-file
+/// write, which has nothing to revert to.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct RawEdit {
+    pub path: String,
+    pub old: Option<String>,
+    pub new: String,
+    pub unix_ts: Option<u64>,
+}
+
 /// Per-agent session file shape: everything that differs between pi and
 /// claude-code JSONL records, as data rather than as parallel loops. Adding a
 /// future agent (codex) means adding a new `Dialect` value, not a new parser
@@ -37,6 +60,8 @@ pub(crate) struct Dialect {
     path_pointer: &'static str,
     /// Maps a tool name to the `RawOp` it represents, or `None` to skip it.
     tool_map: fn(&str) -> Option<RawOp>,
+    /// Argument names for the before/after text of an edit.
+    edit_keys: EditKeys,
 }
 
 fn pi_tool_map(name: &str) -> Option<RawOp> {
@@ -62,6 +87,13 @@ pub(crate) const PI_DIALECT: Dialect = Dialect {
     content_item_type: "toolCall",
     path_pointer: "/arguments/path",
     tool_map: pi_tool_map,
+    edit_keys: EditKeys {
+        args: "/arguments",
+        old: "oldText",
+        new: "newText",
+        edits: "edits",
+        content: "content",
+    },
 };
 
 pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
@@ -69,6 +101,13 @@ pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
     content_item_type: "tool_use",
     path_pointer: "/input/file_path",
     tool_map: claude_tool_map,
+    edit_keys: EditKeys {
+        args: "/input",
+        old: "old_string",
+        new: "new_string",
+        edits: "edits",
+        content: "content",
+    },
 };
 
 /// Parse a session JSONL file into file-path tool-call events, per `dialect`.
@@ -78,6 +117,26 @@ pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
 /// picker (brief).
 pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
     let mut out = Vec::new();
+    visit_tool_calls(text, dialect, |item, _name, op, unix_ts| {
+        if let Some(path) = item.pointer(dialect.path_pointer).and_then(Value::as_str) {
+            out.push(RawEvent {
+                path: path.to_owned(),
+                op,
+                unix_ts,
+            });
+        }
+    });
+    out
+}
+
+/// The record walk shared by `parse_session` and `parse_session_edits`: every
+/// mapped tool-call content item in the file, in file order (== chronological,
+/// since JSONL is append-only), handed to `visit` with its name, op and
+/// timestamp.
+fn visit_tool_calls<F>(text: &str, dialect: &Dialect, mut visit: F)
+where
+    F: FnMut(&Value, &str, RawOp, Option<u64>),
+{
     for line in text.lines() {
         // A line can only yield an event if it carries a content item of the
         // dialect's type, so the item type must appear literally somewhere in
@@ -113,14 +172,113 @@ pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
             let Some(op) = (dialect.tool_map)(name) else {
                 continue;
             };
-            let Some(path) = item.pointer(dialect.path_pointer).and_then(Value::as_str) else {
-                continue;
-            };
-            out.push(RawEvent {
+            visit(item, name, op, unix_ts);
+        }
+    }
+}
+
+/// Every before/after pair the session recorded, in chronological order. A
+/// write yields one `RawEdit` with `old: None`; an edit yields one per
+/// old/new pair, so a three-hunk `MultiEdit` yields three. Reads yield none.
+pub(crate) fn parse_session_edits(text: &str, dialect: &Dialect) -> Vec<RawEdit> {
+    let keys = &dialect.edit_keys;
+    let mut out = Vec::new();
+    visit_tool_calls(text, dialect, |item, _name, op, unix_ts| {
+        let Some(path) = item.pointer(dialect.path_pointer).and_then(Value::as_str) else {
+            return;
+        };
+        let Some(args) = item.pointer(keys.args) else {
+            return;
+        };
+        let mut push = |old: Option<String>, new: String| {
+            out.push(RawEdit {
                 path: path.to_owned(),
-                op,
+                old,
+                new,
                 unix_ts,
             });
+        };
+        match op {
+            RawOp::Read => {}
+            RawOp::Write => {
+                if let Some(content) = args.get(keys.content).and_then(Value::as_str) {
+                    push(None, content.to_owned());
+                }
+            }
+            // One tool name covers both the single-pair and the `edits` array
+            // shape (claude's MultiEdit, pi's edits form), so try the array
+            // first and fall back to the flat pair.
+            RawOp::Edit => {
+                if let Some(edits) = args.get(keys.edits).and_then(Value::as_array) {
+                    for edit in edits {
+                        if let (Some(old), Some(new)) = (
+                            edit.get(keys.old).and_then(Value::as_str),
+                            edit.get(keys.new).and_then(Value::as_str),
+                        ) {
+                            push(Some(old.to_owned()), new.to_owned());
+                        }
+                    }
+                } else if let (Some(old), Some(new)) = (
+                    args.get(keys.old).and_then(Value::as_str),
+                    args.get(keys.new).and_then(Value::as_str),
+                ) {
+                    push(Some(old.to_owned()), new.to_owned());
+                }
+            }
+        }
+    });
+    out
+}
+
+/// `parse_session_edits`, dispatching on the pane's reported agent kind. An
+/// agent with no parser yields an empty list, exactly like `mine_session`.
+pub(crate) fn mine_edits(agent_kind: &str, text: &str) -> Vec<RawEdit> {
+    match agent_kind {
+        "pi" => parse_session_edits(text, &PI_DIALECT),
+        "claude" => parse_session_edits(text, &CLAUDE_DIALECT),
+        _ => Vec::new(),
+    }
+}
+
+/// Every assistant *text* turn in the file, in order -- what the agent
+/// actually said, as opposed to what it did. Tool calls and user turns are
+/// skipped, and so is any agent kind without a dialect.
+pub(crate) fn assistant_text(agent_kind: &str, text: &str) -> Vec<String> {
+    let dialect = match agent_kind {
+        "pi" => &PI_DIALECT,
+        "claude" => &CLAUDE_DIALECT,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        // Same substring pre-filter as visit_tool_calls, for the same reason.
+        if !line.contains("\"text\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(want_type) = dialect.record_type_filter {
+            if value.get("type").and_then(Value::as_str) != Some(want_type) {
+                continue;
+            }
+        }
+        if value.pointer("/message/role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in content {
+            if item.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            if let Some(said) = item.get("text").and_then(Value::as_str) {
+                let said = said.trim();
+                if !said.is_empty() {
+                    out.push(said.to_owned());
+                }
+            }
         }
     }
     out
@@ -349,6 +507,62 @@ mod tests {
     }
 
     #[test]
+    fn claude_edit_and_multiedit_keep_their_before_and_after() {
+        let text = include_str!("../tests/fixtures/session_claude_basic.jsonl");
+        let edits = parse_session_edits(text, &CLAUDE_DIALECT);
+        // Read is not an edit; Write has no "before"; Edit and MultiEdit both
+        // yield one pair each in this fixture.
+        assert_eq!(edits.len(), 3, "{edits:?}");
+        assert_eq!(edits[0].path, "/repo/src/new_mod.rs");
+        assert_eq!(edits[0].old, None, "a Write has nothing to revert to");
+        assert_eq!(edits[0].new, "pub fn f() {}\n");
+        assert_eq!(edits[1].old.as_deref(), Some("a"));
+        assert_eq!(edits[1].new, "b");
+        assert_eq!(edits[2].old.as_deref(), Some("b"), "MultiEdit edits[]");
+        assert_eq!(edits[2].new, "c");
+    }
+
+    #[test]
+    fn pi_edits_array_keeps_its_before_and_after() {
+        let text = include_str!("../tests/fixtures/session_pi_edits_array.jsonl");
+        let edits = parse_session_edits(text, &PI_DIALECT);
+        assert_eq!(edits.len(), 1, "{edits:?}");
+        assert_eq!(edits[0].path, "/repo/src/mod.rs");
+        assert_eq!(edits[0].old.as_deref(), Some("pub mod app;"));
+        assert_eq!(edits[0].new, "pub mod app;\nmod tree;");
+    }
+
+    #[test]
+    fn pi_flat_edit_keeps_its_before_and_after() {
+        let text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
+        let edits = parse_session_edits(text, &PI_DIALECT);
+        assert_eq!(edits.len(), 2, "{edits:?}");
+        assert_eq!(edits[0].old, None, "write");
+        assert_eq!(edits[1].old.as_deref(), Some("a"), "flat oldText/newText");
+        assert_eq!(edits[1].new, "b");
+    }
+
+    #[test]
+    fn only_assistant_prose_is_read_back_as_the_reply() {
+        let text = include_str!("../tests/fixtures/session_claude_reply.jsonl");
+        let said = assistant_text("claude", text);
+        // The user's own turn and the tool call are both skipped.
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said[0].starts_with("The `?` is inside a closure"));
+        assert_eq!(said[1], "Done \u{2014} the error now propagates.");
+        let edits = mine_edits("claude", text);
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new, "run()?;");
+    }
+
+    #[test]
+    fn an_agent_without_a_dialect_yields_no_edits_and_no_reply() {
+        let text = include_str!("../tests/fixtures/session_claude_reply.jsonl");
+        assert!(mine_edits("codex", text).is_empty());
+        assert!(assistant_text("codex", text).is_empty());
+    }
+
+    #[test]
     fn dispatches_by_agent_kind() {
         let pi_text = include_str!("../tests/fixtures/session_pi_basic.jsonl");
         let mined = mine_session("pi", pi_text);
@@ -466,6 +680,24 @@ pub(crate) fn claude_session_path(id: &str, cwds: &[&Path]) -> Option<PathBuf> {
         }
     }
     best.map(|(_, p)| p)
+}
+
+/// The transcript file behind a pane's `agent_session`, if there is one we
+/// can resolve. Herdr reports either a literal `path` (any agent) or an `id`
+/// (claude, resolved under the projects root). Shared by the file picker and
+/// the reply tail so the two can never disagree about which file is the
+/// session.
+pub(crate) fn session_path_for(
+    kind: Option<&str>,
+    value: Option<&str>,
+    agent: &str,
+    cwds: &[&Path],
+) -> Option<PathBuf> {
+    match (kind, value) {
+        (Some("path"), Some(value)) => Some(PathBuf::from(value)),
+        (Some("id"), Some(id)) if agent == "claude" => claude_session_path(id, cwds),
+        _ => None,
+    }
 }
 
 /// The session log plus any subagent logs next to it

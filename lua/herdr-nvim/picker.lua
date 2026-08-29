@@ -261,11 +261,18 @@ end
 
 local function choose()
   local m = state.matches[state.cursor]
+  local on_choose = state.spec and state.spec.on_choose
   P.close()
   if not m then
     return
   end
   local c = m.cand
+  -- A caller that wants the file itself rather than a window showing it --
+  -- the ask composer attaching a path, say -- says so here.
+  if on_choose then
+    on_choose(c)
+    return
+  end
   if not pcall(vim.cmd, "drop " .. vim.fn.fnameescape(c.path)) then
     notify("could not open " .. vim.fn.fnamemodify(c.path, ":~:."), vim.log.levels.ERROR)
     return
@@ -286,9 +293,10 @@ local function move(delta)
   render()
 end
 
---- Open the picker. `spec = { candidates = {...}, cwd = "...", max_files = 20, title = "..." }`
---- where each candidate has `path` and optionally `line`, `session`,
---- `newly_created`, `touched_unix`, `diff_stat = {added, removed}`.
+--- Open the picker. `spec = { candidates = {...}, cwd = "...", max_files = 20, title = "...",
+--- on_choose = function(candidate) end }` where each candidate has `path` and
+--- optionally `line`, `session`, `newly_created`, `touched_unix`,
+--- `diff_stat = {added, removed}`. Without `on_choose` the file is opened.
 function P.open(spec, opts)
   opts = opts or {}
   P.close()

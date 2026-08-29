@@ -139,6 +139,23 @@ keybindings.
 :HerdrNext              Jump to the next annotation.
 :HerdrPrev              Jump to the previous one.
 
+                                       *:HerdrNextEdit* *:HerdrPrevEdit*
+:HerdrNextEdit          Jump to the next edit the agent made in this buffer.
+:HerdrPrevEdit          Jump to the previous one.
+
+                                         *:HerdrRevertEdit* *:HerdrKeepEdit*
+:HerdrRevertEdit        Put the agent's edit under the cursor back the way it
+                        was. Refuses when the text is no longer what the agent
+                        wrote, or when the agent created the file.
+:HerdrKeepEdit          Clear the mark on the edit under the cursor.
+
+                                                              *:HerdrKeepEdits*
+:HerdrKeepEdits         Clear every agent-edit mark in this buffer.
+
+                                                             *:HerdrReplyView*
+:HerdrReplyView         Move into the agent's reply float, to scroll or copy
+                        from it. The float otherwise never takes focus.
+
                                                                   *:HerdrDetach*
 :HerdrDetach            Detach this sidebar client, leaving the daemon
                         running. Only defined inside a sidebar daemon
@@ -159,6 +176,12 @@ Defaults, created unless `keymaps = false`:
     <leader>af   n      pick a file the agent touched
     ]a           n      next annotation
     [a           n      previous annotation
+    ]r           n      next edit the agent made
+    [r           n      previous edit the agent made
+    <leader>au   n      undo the agent's edit under the cursor
+    <leader>ak   n      keep the agent's edit under the cursor
+    <leader>at   n      choose which agent to ask
+    <leader>ag   n      list the agents visible from here
 
 An existing mapping is never clobbered: if `<leader>al` is already taken by
 something else, that mapping is left alone and the default is skipped
@@ -168,6 +191,10 @@ remove only the mappings this plugin created.
 Note that LazyVim maps `]a` and `[a` buffer-locally to treesitter parameter
 motions, which win inside code buffers. Use |:HerdrNext| and |:HerdrPrev|, or
 map them yourself.
+
+`]r`/`[r` rather than the more obvious `]h`/`[h` for the agent's edits: most
+configurations give `]h`/`[h` to gitsigns buffer-locally, which would win
+inside exactly the code buffers these are for.
 
 ==============================================================================
 6. CONFIGURATION                                            *herdr-nvim-config*
@@ -248,11 +275,41 @@ message last. |:HerdrReply| sends the message on its own: the agent already
 has the code from the previous turn.
 
                                                           *herdr-nvim-ask-reply*
-The reply appears in the agent's own Herdr pane, not in Neovim. Herdr's
-`agent.prompt` types a string into the agent's terminal and answers with
-lifecycle state, never text — there is no conversation object and no streaming
-to read back. `focus_after_ask` (on by default) focuses that pane so you see
-the answer arrive.
+The answer appears in a float in Neovim that does not take your focus, so you
+can keep working while it fills in. `q` or <Esc> closes it; |:HerdrReplyView|
+moves into it to scroll or copy. The float's footer, and your statusline, show
+what the agent is doing: `◑ working`, `⏸ waiting for you in its pane`, `✓ done`.
+
+The route is roundabout. `agent.prompt` types a string into the agent's
+terminal and answers with lifecycle state, never text, so the call that sends
+cannot also return the answer. But Herdr reports the transcript file behind
+every agent pane, and that file is append-only: |:HerdrAsk| records its length
+at the moment it sends, and everything past that offset is the reply to that
+message. Herdr also pushes `pane.agent_status_changed` as the agent picks the
+work up and puts it down, which is where the status comes from.
+
+Two caveats. The transcript is written a message at a time, so the reply
+arrives in one piece rather than streaming word by word. And it only works for
+agents whose transcript format herdr-nvim can read — Claude Code and pi today;
+for anything else no float opens and the agent's own pane is the place to
+read, as before. `reply = { enabled = false }` always reads there;
+`focus_after_ask = true` focuses that pane for you.
+
+                                                             *herdr-nvim-review*
+The same transcript records every edit the agent made, with the text before
+and after, so those are marked in the buffer where the change landed.
+
+    ]r                  next edit the agent made
+    [r                  previous edit
+    <leader>au          undo the edit under the cursor
+    <leader>ak          keep it: clear the mark
+
+By the time a mark appears the edit is already on disk, so <leader>au reverts
+rather than declines it. It refuses when the text under the mark is no longer
+what the agent wrote, so it cannot clobber an edit of your own; a file the
+agent created has nothing to revert to and says so. |:HerdrNextEdit|,
+|:HerdrPrevEdit|, |:HerdrRevertEdit|, |:HerdrKeepEdit| and |:HerdrKeepEdits|
+are the commands. `review = { enabled = false }` turns the marks off.
 
                                                          *herdr-nvim-ask-target*
 The first ask resolves a target the way |:HerdrSend| does: the lone agent in
@@ -319,6 +376,28 @@ statusline or winbar can refresh: >lua
       callback = function() vim.cmd.redrawstatus() end,
     })
 <
+                                              *HerdrNvimAgentStatus*
+Fires when Herdr reports that an agent changed state. Unlike the event above
+it carries its payload, so a listener needs no follow-up call: >lua
+
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "HerdrNvimAgentStatus",
+      callback = function(ev)
+        -- ev.data = { pane_id, agent, status, at }
+        -- status is idle | working | blocked | done | unknown
+        vim.cmd.redrawstatus()
+      end,
+    })
+<
+                                               *HerdrNvimAgentReply*
+Fires when new text or edits arrive in the transcript of the agent being
+followed. `ev.data` is `{ pane_id, reply, edits }`, where `reply` is a list of
+the agent's text turns and `edits` a list of `{ path, old, new }`.
+
+                                            *HerdrNvimReviewChanged*
+Fires when the set of unreviewed agent edits changes. `ev.data.count` is how
+many are left.
+
 ==============================================================================
 13. HIGHLIGHTS                                          *herdr-nvim-highlights*
 
@@ -336,6 +415,8 @@ any colorscheme works and any of them can be overridden:
     HerdrNvimPickerDiff      DiffAdd
     HerdrNvimPickerNew       DiagnosticVirtualTextWarn
     HerdrNvimPickerAge       Comment
+    HerdrNvimReview          DiffAdd
+    HerdrNvimReviewVirt      DiagnosticVirtualTextHint
 
 They are re-applied on |ColorScheme|.
 

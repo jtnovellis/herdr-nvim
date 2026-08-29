@@ -12,7 +12,9 @@ local defaults = {
   -- Ask (:HerdrAsk): the composer float and where its message goes.
   ask_height = 5, -- initial composer height; it grows as you type
   ask_send_key = "<C-s>", -- <CR> in normal mode always sends too
-  focus_after_ask = true, -- focus the agent pane so you see the reply arrive
+  focus_after_ask = false, -- focus the agent pane instead of reading the reply here
+  reply = { enabled = true }, -- read the agent's answer in the composer
+  review = { enabled = true }, -- mark what the agent edited, ]h / [h to step
   clear_on_send = true, -- forget annotations after <leader>aS succeeds
   clear_on_paste = false, -- after <leader>as: false marks them delivered instead
   focus_after_send = false, -- focus the agent pane after delivery
@@ -48,6 +50,10 @@ local function define_highlights()
   hl(0, "HerdrNvimListLoc", { link = "Directory", default = true })
   hl(0, "HerdrNvimStale", { link = "Comment", default = true })
   hl(0, "HerdrNvimDelivered", { link = "DiagnosticVirtualTextOk", default = true })
+  hl(0, "HerdrNvimReview", { link = "DiffAdd", default = true })
+  hl(0, "HerdrNvimReviewVirt", { link = "DiagnosticVirtualTextHint", default = true })
+  hl(0, "HerdrNvimAgentWorking", { link = "DiagnosticWarn", default = true })
+  hl(0, "HerdrNvimAgentDone", { link = "DiagnosticOk", default = true })
   -- Defined here rather than in picker.open so they are re-applied on
   -- ColorScheme like the rest, and can be overridden before the first open.
   hl(0, "HerdrNvimPickerMatch", { link = "Special", default = true })
@@ -132,6 +138,57 @@ local keymaps = {
       M.prev()
     end,
     "previous annotation",
+  },
+  -- Reviewing what the agent changed. `]r`/`[r` rather than the more obvious
+  -- `]h`/`[h`, which gitsigns takes buffer-locally in most configurations and
+  -- would win inside exactly the code buffers these are for.
+  {
+    "n",
+    "]r",
+    function()
+      M.next_hunk()
+    end,
+    "next agent edit",
+  },
+  {
+    "n",
+    "[r",
+    function()
+      M.prev_hunk()
+    end,
+    "previous agent edit",
+  },
+  {
+    "n",
+    "<leader>au",
+    function()
+      M.revert_hunk()
+    end,
+    "undo the agent's edit under the cursor",
+  },
+  {
+    "n",
+    "<leader>ak",
+    function()
+      M.keep_hunk()
+    end,
+    "keep the agent's edit under the cursor",
+  },
+  {
+    "n",
+    "<leader>at",
+    function()
+      M.ask_target()
+    end,
+    "choose which agent to ask",
+  },
+  {
+    "n",
+    "<leader>ag",
+    function()
+      M.agents()
+    end,
+    "list the agents visible from here",
   },
 }
 
@@ -278,6 +335,32 @@ local function setup_daemon_features()
   })
 end
 
+--- Place the agent's edits in files as they open, and let them go with the
+--- buffer. A file the agent touched while it was closed still gets its marks:
+--- the hunks are held by path until something shows them.
+local function setup_review()
+  local R = require("herdr-nvim.review")
+  if not (M.config.review and M.config.review.enabled ~= false) then
+    R.clear()
+    return
+  end
+  local group = vim.api.nvim_create_augroup("HerdrNvimReview", { clear = true })
+  vim.api.nvim_create_autocmd({ "BufReadPost", "FileChangedShellPost" }, {
+    group = group,
+    callback = function(ev)
+      R.attach(ev.buf)
+    end,
+  })
+  -- Wiping a buffer fires BufDelete *and* BufWipeout; dropping by buffer is
+  -- idempotent, so the second one simply finds nothing.
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = group,
+    callback = function(ev)
+      R.detach(ev.buf)
+    end,
+  })
+end
+
 function M.setup(opts)
   validate(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
@@ -293,6 +376,7 @@ function M.setup(opts)
   else
     apply_keymaps(false)
   end
+  setup_review()
   setup_daemon_features()
 end
 
@@ -419,13 +503,81 @@ function M.count()
   return A.count()
 end
 
---- Statusline component: "● 3" while annotations are pending, else "".
-function M.statusline()
-  local n = A.count()
-  if n == 0 then
-    return ""
+-- What each agent state looks like in a statusline. `idle` is deliberately
+-- absent: an agent doing nothing is the resting state and does not deserve
+-- permanent furniture.
+local STATUS_ICON = {
+  working = "\u{25d1}",
+  blocked = "\u{23f8}",
+  done = "\u{2713}",
+}
+
+-- ------------------------------------------------------------- review ---
+
+local function review()
+  return require("herdr-nvim.review")
+end
+
+--- Cursor to the next/previous edit the agent made in this buffer.
+function M.next_hunk()
+  if not review().jump(1) then
+    notify("no agent edits in this buffer")
   end
-  return M.config.statusline_icon .. " " .. n
+end
+
+function M.prev_hunk()
+  if not review().jump(-1) then
+    notify("no agent edits in this buffer")
+  end
+end
+
+local function hunk_here()
+  local buf = vim.api.nvim_get_current_buf()
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  return review().find_at(buf, row)
+end
+
+--- Put the agent's change back the way it was.
+function M.revert_hunk()
+  local ok, err = review().revert(hunk_here())
+  if ok then
+    notify("reverted the agent's edit")
+  else
+    notify(err or "no agent edit here", vim.log.levels.WARN)
+  end
+end
+
+--- Stop marking the edit under the cursor; you have reviewed it.
+function M.keep_hunk()
+  if not review().accept(hunk_here()) then
+    notify("no agent edit here", vim.log.levels.WARN)
+  end
+end
+
+--- Stop marking every edit in this buffer.
+function M.keep_all_hunks()
+  review().clear(vim.api.nvim_get_current_buf())
+  notify("cleared the agent-edit marks in this buffer")
+end
+
+--- Statusline component. Shows what the agent is doing, then how many of its
+--- edits are still unreviewed, then how many annotations are queued -- each
+--- part only when it has something to say, so an idle editor shows "".
+function M.statusline()
+  local parts = {}
+  local agent = require("herdr-nvim.agent").status()
+  if agent and STATUS_ICON[agent.status] then
+    table.insert(parts, STATUS_ICON[agent.status] .. " " .. (agent.agent or "agent"))
+  end
+  local hunks = require("herdr-nvim.review").count()
+  if hunks > 0 then
+    table.insert(parts, "~" .. hunks)
+  end
+  local n = A.count()
+  if n > 0 then
+    table.insert(parts, M.config.statusline_icon .. " " .. n)
+  end
+  return table.concat(parts, " ")
 end
 
 local function goto_item(item)
@@ -642,7 +794,10 @@ function M.preview()
 end
 
 --- Fuzzy-pick a file the agent touched this session (or any repo file).
-function M.pick_file(target)
+---
+--- `on_choose` receives the candidate instead of the file being opened, for
+--- callers that want the path rather than a window showing it.
+function M.pick_file(target, on_choose)
   local args = { "pick-file", "--json" }
   if target then
     vim.list_extend(args, { "--target", target })
@@ -660,7 +815,7 @@ function M.pick_file(target)
         end,
       }, function(choice)
         if choice then
-          M.pick_file(choice.pane_id)
+          M.pick_file(choice.pane_id, on_choose)
         end
       end)
       return
@@ -669,8 +824,17 @@ function M.pick_file(target)
       notify(res.error or "pick-file failed", vim.log.levels.WARN)
       return
     end
-    require("herdr-nvim.picker").open(res.handoff, { force_without_ui = true })
+    local spec = res.handoff
+    if on_choose and type(spec) == "table" then
+      spec.on_choose = on_choose
+    end
+    require("herdr-nvim.picker").open(spec, { force_without_ui = true })
   end, { label = "gathering files" })
+end
+
+--- Pick a file and hand the candidate to `on_choose` without opening it.
+function M.pick_file_into(on_choose)
+  M.pick_file(nil, on_choose)
 end
 
 --- List agent candidates: `callback(list)`; notifies when no callback.

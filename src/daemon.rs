@@ -617,7 +617,76 @@ fn event_name(payload: &Value) -> String {
     from_data.unwrap_or_else(|| env::var("HERDR_PLUGIN_EVENT").unwrap_or_default())
 }
 
-/// `[[events]]` entrypoint: `tab.closed`, `workspace.closed`, `pane.closed`.
+/// Events that report what an agent is doing, as `event_name` spells them.
+/// Named rather than inlined into the match so the routing can be tested: a
+/// name that does not match what Herdr sends would fall through to `gc()`,
+/// which is silent, expensive, and wrong.
+const AGENT_EVENTS: &[&str] = &["pane.agent_status_changed", "pane.agent_detected"];
+
+/// Tell a tab's Neovim what its agent is doing.
+///
+/// Herdr's event payload names the pane and the workspace but not the tab, so
+/// the tab has to be resolved before the daemon registry can be consulted.
+/// Both lookups are skipped when this session has no daemons at all: agent
+/// status flips constantly in tabs that have never opened a sidebar, and
+/// those must cost nothing.
+fn push_agent_state(
+    cfg: &Config,
+    herdr: &Herdr,
+    session: &str,
+    event: &str,
+    data: &Value,
+) -> Result<i32> {
+    let Some(pane_id) = data.get("pane_id").and_then(Value::as_str) else {
+        return Ok(0);
+    };
+    let file = StateFile::open()?;
+    let state = file.load()?;
+    if state.tabs_of(session).is_empty() {
+        return Ok(0);
+    }
+    // A released agent reports where it ended up under a different key.
+    let status = data
+        .get("agent_status")
+        .or_else(|| data.get("final_status"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let agent = data
+        .get("agent")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    let Some(pane) = herdr.pane_get(pane_id).ok().flatten() else {
+        return Ok(0);
+    };
+    let Some(tab_id) = pane.tab_id.as_deref() else {
+        return Ok(0);
+    };
+    let Some(record) = state.get(session, tab_id) else {
+        return Ok(0);
+    };
+    if record.sidebar_pane_id.is_none() {
+        // The daemon is alive but hidden; nobody is looking at a statusline.
+        return Ok(0);
+    }
+    let payload = serde_json::json!({
+        "pane_id": pane_id,
+        "agent": agent,
+        "status": status,
+        "event": event,
+    });
+    // One escaping layer: the dict crosses as a JSON string that the Lua side
+    // decodes, rather than as a VimL dict literal built by hand.
+    let expr = format!(
+        "luaeval(\"require('herdr-nvim.agent').on_status(_A)\", {})",
+        viml_string(&payload.to_string())
+    );
+    remote_expr(cfg, &record.socket, &expr);
+    Ok(0)
+}
+
+/// `[[events]]` entrypoint: `tab.closed`, `workspace.closed`, `pane.closed`,
+/// `pane.agent_status_changed`, `pane.agent_detected`.
 pub fn handle_event() -> Result<i32> {
     let payload: Value = env::var("HERDR_PLUGIN_EVENT_JSON")
         .ok()
@@ -678,6 +747,12 @@ pub fn handle_event() -> Result<i32> {
                 println!("pane.closed: forgot sidebar pane {pane}");
             }
             return Ok(0);
+        }
+        // Agent lifecycle: push the new state into this tab's Neovim, if it
+        // has one. Kept before the wildcard on purpose -- falling through to
+        // `gc()` would run a full daemon sweep on every idle/working flip.
+        event if AGENT_EVENTS.contains(&event) => {
+            return push_agent_state(&cfg, &herdr, &session, event, &data);
         }
         _ => return gc(),
     };
@@ -1157,5 +1232,46 @@ mod tests {
         assert_eq!(event_name(&payload), "tab.closed");
         let payload = serde_json::json!({"data": {"type": "pane_agent_status_changed"}});
         assert_eq!(event_name(&payload), "pane.agent_status_changed");
+    }
+
+    /// Verbatim payloads observed from Herdr 0.8.2. The names must land in
+    /// `AGENT_EVENTS`; anything else falls through to `gc()`, so a rename on
+    /// either side has to fail here rather than in production.
+    #[test]
+    fn real_agent_payloads_route_to_the_agent_arm() {
+        let status = serde_json::json!({
+            "event": "pane_agent_status_changed",
+            "data": {"type": "pane_agent_status_changed", "pane_id": "wF:pR",
+                     "workspace_id": "wF", "agent_status": "working", "agent": "claude"}
+        });
+        let detected = serde_json::json!({
+            "event": "pane_agent_detected",
+            "data": {"type": "pane_agent_detected", "pane_id": "wF:pQ",
+                     "workspace_id": "wF", "agent": "claude",
+                     "released": true, "final_status": "idle"}
+        });
+        for payload in [&status, &detected] {
+            let name = event_name(payload);
+            assert!(
+                AGENT_EVENTS.contains(&name.as_str()),
+                "{name} would fall through to gc()"
+            );
+        }
+        // `pane.closed` must NOT be treated as an agent event: it has its own
+        // arm that forgets the sidebar pane.
+        assert!(!AGENT_EVENTS.contains(&"pane.closed"));
+    }
+
+    /// A released agent reports where it ended up as `final_status`, not
+    /// `agent_status` -- reading only the latter would show a stale state.
+    #[test]
+    fn released_agent_status_falls_back_to_final_status() {
+        let data = serde_json::json!({"released": true, "final_status": "idle"});
+        let status = data
+            .get("agent_status")
+            .or_else(|| data.get("final_status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        assert_eq!(status, "idle");
     }
 }

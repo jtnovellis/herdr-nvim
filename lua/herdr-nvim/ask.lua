@@ -1,9 +1,11 @@
 -- One message to the agent, sent the moment you finish typing it: the lines you
 -- selected, then what you want to say about them.
 --
--- The reply lands in the agent's own Herdr pane, not here. That is not a
--- shortcut: `agent.prompt` types a string into the agent's PTY and answers with
--- lifecycle state, never text, so Herdr has no reply channel to stream back.
+-- `agent.prompt` types a string into the agent's PTY and answers with lifecycle
+-- state, never text, so the call that sends cannot also return the answer. The
+-- answer is still readable: Herdr reports the transcript behind every agent
+-- pane, and `ask` returns its length at the moment it sends, so
+-- `herdr-nvim.agent` can tail it from there. See `herdr-nvim.reply`.
 local Ask = {}
 
 local bridge = require("herdr-nvim.bridge")
@@ -185,6 +187,10 @@ function Ask.open(opts)
   map("n", "<Esc>", Ask.close)
   map({ "i", "n" }, "<C-c>", Ask.close)
   map("n", "q", Ask.close)
+  -- `@` attaches another file to the question, the way you would name one out
+  -- loud. It reuses the file picker rather than inventing a second one, so it
+  -- opens on the files the agent has already touched.
+  map("i", "@", Ask.mention)
 
   local group = vim.api.nvim_create_augroup(GROUP, { clear = true })
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
@@ -212,6 +218,29 @@ function Ask.open(opts)
     end,
   })
   vim.cmd("startinsert")
+end
+
+--- Attach a file path to the message being composed.
+---
+--- The composer is a normal buffer, so this inserts text rather than keeping
+--- an attachment list: what you send is what you can see.
+function Ask.mention()
+  if not Ask.is_open() then
+    return
+  end
+  local composer = state.win
+  hn().pick_file_into(function(candidate)
+    if not (composer and vim.api.nvim_win_is_valid(composer)) then
+      return
+    end
+    vim.api.nvim_set_current_win(composer)
+    local path = vim.fn.fnamemodify(candidate.path, ":~:.")
+    if candidate.line then
+      path = path .. ":" .. candidate.line
+    end
+    vim.api.nvim_put({ path }, "c", true, true)
+    vim.cmd("startinsert!")
+  end)
 end
 
 function Ask.submit()
@@ -323,7 +352,19 @@ function Ask.send(message, ctx, opts)
     draft = nil
     last_target = { pane_id = t.pane_id, agent = t.agent }
     local via = (res.via and res.via ~= "agent.prompt") and " (raw input)" or ""
-    notify(("asked %s (%s)%s"):format(t.agent or "agent", t.pane_id or "?", via))
+    -- Follow the answer back. `res.session` is null when Herdr tracks no
+    -- transcript we can read for this agent kind, in which case the agent's
+    -- own pane stays the only place to read -- exactly as it always was.
+    local followed = false
+    if M.config.reply and M.config.reply.enabled ~= false and res.session then
+      followed = require("herdr-nvim.agent").follow(t.pane_id, res.session)
+      if followed then
+        require("herdr-nvim.reply").open({ agent = t.agent, pane_id = t.pane_id })
+      end
+    end
+    if not followed then
+      notify(("asked %s (%s)%s"):format(t.agent or "agent", t.pane_id or "?", via))
+    end
   end, { label = "asking the agent" })
 end
 
