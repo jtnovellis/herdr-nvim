@@ -12,9 +12,14 @@ Neovim integration for [Herdr](https://herdr.dev).
 - **Fuzzy file picker.** `prefix+f` opens on the files your agent touched
   this session (newest first, with diff stats); type to fuzzy-search the
   whole repo; `⏎` opens the file in the sidebar at the right line.
-- **Code annotations for agents.** Comment lines or a selection like a code
-  review, then paste or send them all to any agent in the workspace (Claude
-  Code, Codex, pi, OpenCode, …) with `file:line`, the code, and git context.
+- **Ask the agent about the code you are looking at.** Select lines (or just
+  sit on one), `<leader>ac`, type a message, `⌃s` — it goes straight to any
+  agent in the workspace (Claude Code, Codex, pi, OpenCode, …) with
+  `file:line`, the code and git context attached. The reply appears in the
+  agent's own Herdr pane. `<leader>ar` keeps the conversation going.
+- **Code annotations for a batch review.** When you want to mark up several
+  places first and send them as one request, comment lines or selections and
+  flush the queue with `<leader>aS`.
 - **Files edited by agents reload in the sidebar** while your pending
   annotations stay attached.
 
@@ -117,9 +122,11 @@ use it, lazy-load on the commands and keys:
   -- The sidebar daemon needs it at startup for the reload watcher and the
   -- quit guard; everywhere else it can wait.
   lazy = vim.env.HERDR_NVIM_DAEMON ~= "1",
-  cmd = { "HerdrAnnotate", "HerdrAnnotations", "HerdrSend", "HerdrPaste",
-          "HerdrPreview", "HerdrPickFile", "HerdrAgents" },
-  keys = { "<leader>ac", "<leader>al", "<leader>as", "<leader>aS", "<leader>af" },
+  cmd = { "HerdrAsk", "HerdrReply", "HerdrAskTarget", "HerdrAnnotate",
+          "HerdrAnnotations", "HerdrSend", "HerdrPaste", "HerdrPreview",
+          "HerdrPickFile", "HerdrAgents" },
+  keys = { "<leader>ac", "<leader>ar", "<leader>aa", "<leader>al",
+           "<leader>as", "<leader>aS", "<leader>af" },
   opts = {},
 }
 ```
@@ -235,11 +242,85 @@ binary yourself**. They do not reach a Herdr keybinding: `plugin action invoke`
 does not forward your shell environment, so `export HERDR_NVIM_SIDE=left` in
 `.zshrc` has no effect on the sidebar. Put it in `config.env`.
 
-## Annotations
+## Ask
+
+Select the lines you want to talk about (or just sit on one), press
+`<leader>ac`, type your message, `⌃s`. That is the whole loop.
 
 | Mapping | Action |
 | --- | --- |
-| `<leader>ac` | comment the current line / visual selection (on an existing one: edit it) |
+| `<leader>ac` | ask about the current line / visual selection |
+| `<leader>ar` | follow up, with no code attached |
+
+Inside the composer:
+
+| Key | |
+| --- | --- |
+| `⌃s` | send |
+| `⏎` (normal mode) | send |
+| `⌃c`, or `⎋` from normal mode | cancel |
+
+`⌃s` is XON/XOFF flow control on a terminal that has not run `stty -ixon`, so
+it can be swallowed before Neovim sees it. `⏎` in normal mode always works,
+and `ask_send_key` rebinds it.
+
+The lines you are asking about stay highlighted while you type, and the box
+keeps your text if it loses focus — it is only discarded when you cancel or
+the message is sent.
+
+This is what the agent receives:
+
+````
+From Neovim — src/send.rs:470-473 (herdr-nvim, main @ 917cd5b)
+
+```rust
+match herdr.agent_prompt(pane, prompt) {
+    Ok(_) => Ok("agent.prompt"),
+    Err(err) => match herdr::error_code(&err) {
+        Some(
+```
+
+why does this fall back to raw input?
+````
+
+A follow-up (`<leader>ar`) sends your message on its own — the agent already
+has the code from the turn before, and repeating the header only muddies it.
+
+### Where the reply goes
+
+In the agent's own Herdr pane, not in Neovim. That is not a shortcut: Herdr's
+`agent.prompt` types a string into the agent's PTY and answers with lifecycle
+state, never text. There is no conversation object and no streaming to read
+back, so the pane beside your sidebar *is* the transcript. `focus_after_ask`
+(on by default) focuses it so you watch the answer arrive.
+
+### Which agent
+
+The first ask resolves a target the same way sending annotations does: the
+lone agent in the workspace, or the single agent sharing this tab, otherwise a
+`vim.ui.select` picker. That pane is then remembered, so follow-ups go to the
+same agent without asking again.
+
+If it disappears, the next ask notices, forgets it and resolves once more
+rather than making you rediscover an agent you never chose. `:HerdrAskTarget`
+picks a different one; `:HerdrAskTarget!` forgets the current one.
+
+An agent sitting at an approval prompt is refused — Herdr will not send it any
+bytes at all — with `agent_blocked`. Answer the prompt, or force it with
+`:HerdrAsk!`.
+
+Commands: `:HerdrAsk[!] [message]` (accepts a range; a message on the command
+line skips the composer), `:HerdrReply[!] [message]`, `:HerdrAskTarget[!]`.
+
+## Annotations (queued review)
+
+The queue is the other half: mark up several places first, then send them as
+one review request. For a single question about one spot, use `<leader>ac`
+above.
+
+| Mapping | Action |
+| --- | --- |
+| `<leader>aa` | comment the current line / visual selection (on an existing one: edit it) |
 | `<leader>al` | list comments (float): hover to preview, `⏎` edit, `d` delete, `o` go there, `s` paste, `S` send, `q` back to where you were |
 | `<leader>as` | paste all comments into the agent's input |
 | `<leader>aS` | send all comments to the agent (auto-submits) |
@@ -250,6 +331,9 @@ Commands: `:HerdrAnnotate` (accepts a range), `:HerdrAnnotations`,
 `:HerdrPaste[!]`, `:HerdrSend[!]`, `:HerdrPreview`, `:HerdrNext`, `:HerdrPrev`,
 `:HerdrClear`, `:HerdrAgents`, `:HerdrPickFile`. The `!` forms send even to an agent that is
 waiting at an approval prompt.
+
+Asking and sending share one target resolution, one in-flight lock and one
+delivery path, so an ask and a queue flush can never race into the same pane.
 
 Sending skips the picker when the target is obvious: the lone agent in the
 workspace, or the single agent sharing this tab (the sibling pane). The
@@ -265,7 +349,7 @@ dimmed (`~`) in the list and is not sent; a pasted comment is kept and marked
 
 `:HerdrPreview` shows exactly what the agent will receive:
 
-```
+````
 Code annotations from Neovim (2 comments) — repo herdr-nvim, branch main @ 3f2a9c1
 Root: /Users/me/developer/herdr-nvim
 
@@ -284,7 +368,7 @@ local M = {}
 ```
 
 Please address each annotation above; refer to them by number.
-```
+````
 
 Paths are relative to the repo root; when the chosen agent works outside that
 repo (another worktree, say) they are sent absolute, with a note.
@@ -319,6 +403,9 @@ require("herdr-nvim").setup({
   keymaps = true,            -- true | false | "force" (override existing mappings)
   binary = nil,              -- explicit path to the herdr-nvim binary
   prompt = "Comment: ",
+  ask_height = 5,            -- initial composer height; it grows as you type
+  ask_send_key = "<C-s>",    -- <CR> in normal mode always sends too
+  focus_after_ask = true,    -- focus the agent pane so you see the reply arrive
   clear_on_send = true,      -- forget comments after <leader>aS
   clear_on_paste = false,    -- after <leader>as: keep them, marked delivered
   focus_after_send = false,  -- jump to the agent pane after delivery
@@ -334,9 +421,9 @@ require("herdr-nvim").setup({
 
 Default mappings never override an existing mapping on the same keys (use
 `keymaps = "force"`). Set `vim.g.herdr_nvim_no_defaults = true` before the
-plugin loads to skip the automatic `setup()`. Highlights: `HerdrNvimAnnotation`,
-`HerdrNvimSign`, `HerdrNvimVirt`, `HerdrNvimListLoc`, `HerdrNvimStale`,
-`HerdrNvimDelivered`.
+plugin loads to skip the automatic `setup()`. Highlights: `HerdrNvimAskRange`,
+`HerdrNvimAnnotation`, `HerdrNvimSign`, `HerdrNvimVirt`, `HerdrNvimListLoc`,
+`HerdrNvimStale`, `HerdrNvimDelivered`.
 
 ### Reloading agent edits
 
@@ -354,7 +441,8 @@ herdr action "toggle"                  herdr pane (split)
         │                              ▲
         └── plugin pane open ──▶ herdr-nvim sidebar ──▶ nvim --server <sock> --remote-ui
                                        │
-                          <leader>aS ──┴──▶ herdr-nvim send ──▶ herdr agent prompt <pane>
+                          <leader>ac ──┼──▶ herdr-nvim ask  ──▶ agent.prompt <pane>
+                          <leader>aS ──┴──▶ herdr-nvim send ──▶ agent.prompt <pane>
 ```
 
 - State lives in `~/.local/state/herdr/plugins/herdr-nvim/daemons.json` (pid,

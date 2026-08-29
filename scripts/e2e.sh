@@ -201,6 +201,22 @@ HERDR_SOCKET_PATH="$SOCK" HERDR_WORKSPACE_ID="${TAB%%:*}" HERDR_TAB_ID="$TAB" "$
 OUT=$(HERDR_SOCKET_PATH="$SOCK" HERDR_WORKSPACE_ID="${TAB%%:*}" HERDR_TAB_ID="$TAB" "$BIN" send --file "$TMP/payload.json" || true)
 echo "$OUT" | grep -q '"code":"no_agents"' || fail "expected no_agents, got: $OUT"
 
+step "ask --dry-run and ask with no agents"
+cat > "$TMP/ask.json" <<JSON
+{"cwd":"$REPO","message":"why two?","selection":{"file":"$REPO/a.txt","line":2,"end_line":2,"code":"two","filetype":"text","modified":false}}
+JSON
+ENV_ASK=(HERDR_SOCKET_PATH="$SOCK" HERDR_WORKSPACE_ID="${TAB%%:*}" HERDR_TAB_ID="$TAB")
+PROMPT=$(env "${ENV_ASK[@]}" "$BIN" ask --dry-run --file "$TMP/ask.json")
+echo "$PROMPT" | grep -q '"dry_run":true' || fail "ask dry-run failed: $PROMPT"
+echo "$PROMPT" | grep -q 'From Neovim' || fail "ask prompt lost its header: $PROMPT"
+echo "$PROMPT" | grep -q 'a.txt:2' || fail "ask prompt lost the location: $PROMPT"
+if echo "$PROMPT" | grep -q 'refer to them by number'; then fail "the annotation framing leaked into ask"; fi
+OUT=$(env "${ENV_ASK[@]}" "$BIN" ask --file "$TMP/ask.json" || true)
+echo "$OUT" | grep -q '"code":"no_agents"' || fail "expected no_agents, got: $OUT"
+# `ask` exits 1 on a refusal and pipefail would propagate that, so capture first.
+BLANK=$(printf '%s' '{"message":"  "}' | env "${ENV_ASK[@]}" "$BIN" ask || true)
+echo "$BLANK" | grep -q '"code":"no_message"' || fail "a blank ask was not refused: $BLANK"
+
 step "tab close saves modified buffers and stops the daemon"
 nvim --server "$DSOCK" --remote-expr "execute(['edit a.txt','call setline(1,\"changed by e2e\")'])" >/dev/null
 TAB2=$(hs tab create --workspace "${TAB%%:*}" --label two --no-focus | json 'r["tab"]["tab_id"]')

@@ -3,7 +3,7 @@ vim.ui.input = function(_, cb)
 end
 edit("hn.txt")
 
-vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("Vj ac", true, false, true), "x", false)
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("Vj aa", true, false, true), "x", false)
 local l = require("herdr-nvim.annotations").list()
 check(vim.fn.mode() == "n", "still in visual mode: " .. vim.fn.mode())
 check(#l == 1, "expected 1 annotation, got " .. #l)

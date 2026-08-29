@@ -70,7 +70,7 @@ struct SendArgs {
     dry_run: bool,
 }
 
-fn coded(code: &str, message: impl Into<String>) -> anyhow::Error {
+pub fn coded(code: &str, message: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(HerdrError {
         code: code.to_string(),
         message: message.into(),
@@ -101,26 +101,32 @@ fn parse_send_args(args: &[String]) -> Result<SendArgs> {
     Ok(out)
 }
 
-fn read_payload(opts: &SendArgs) -> Result<Payload> {
-    let raw = match &opts.file {
+/// The JSON payload the Lua side hands us: `--file PATH`, or stdin when the
+/// path is absent or `-`. Shared with `ask`.
+pub fn read_stdin_or_file(file: Option<&Path>, what: &str) -> Result<String> {
+    match file {
         Some(path) if path.as_os_str() != "-" => {
-            fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?
+            fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))
         }
         _ => {
             let mut buf = Vec::new();
             std::io::stdin()
                 .read_to_end(&mut buf)
-                .context("cannot read annotations from stdin")?;
-            String::from_utf8_lossy(&buf).into_owned()
+                .with_context(|| format!("cannot read {what} from stdin"))?;
+            Ok(String::from_utf8_lossy(&buf).into_owned())
         }
-    };
+    }
+}
+
+fn read_payload(opts: &SendArgs) -> Result<Payload> {
+    let raw = read_stdin_or_file(opts.file.as_deref(), "annotations")?;
     if raw.trim().is_empty() {
         return Ok(Payload::default());
     }
     serde_json::from_str(&raw).context("annotations payload is not valid JSON")
 }
 
-fn error_json(err: &anyhow::Error) -> Value {
+pub fn error_json(err: &anyhow::Error) -> Value {
     match err.downcast_ref::<HerdrError>() {
         Some(e) => json!({ "ok": false, "code": e.code, "error": e.message }),
         None => json!({ "ok": false, "error": format!("{err:#}") }),
@@ -260,7 +266,7 @@ pub fn precheck(target: &Candidate, launch_pending: bool, force: bool) -> Result
         return Err(coded(
             "agent_blocked",
             format!(
-                "{} ({}) is blocked waiting for your input; answer it first, or force with :HerdrSend! / :HerdrPaste!",
+                "{} ({}) is blocked waiting for your input; answer it first, or force with the ! form of the command",
                 target.agent, target.pane_id
             ),
         ));
@@ -461,7 +467,12 @@ pub fn paths_should_be_absolute(
     }
 }
 
-fn deliver(herdr: &Herdr, target: &Candidate, prompt: &str, submit: bool) -> Result<&'static str> {
+pub fn deliver(
+    herdr: &Herdr,
+    target: &Candidate,
+    prompt: &str,
+    submit: bool,
+) -> Result<&'static str> {
     let pane = target.pane_id.as_str();
     if !submit {
         herdr.pane_send_input(pane, Some(prompt), &[])?;
@@ -485,10 +496,10 @@ fn deliver(herdr: &Herdr, target: &Candidate, prompt: &str, submit: bool) -> Res
     }
 }
 
-fn describe(err: anyhow::Error, target: &Candidate) -> anyhow::Error {
+pub fn describe(err: anyhow::Error, target: &Candidate) -> anyhow::Error {
     let who = format!("{} ({})", target.agent, target.pane_id);
     let mapped = match herdr::error_code(&err) {
-        Some("agent_blocked") => Some(("agent_blocked", format!("{who} is blocked waiting for your input; answer it first, or force with :HerdrSend!"))),
+        Some("agent_blocked") => Some(("agent_blocked", format!("{who} is blocked waiting for your input; answer it first, or force with the ! form of the command"))),
         Some("not_found" | "pane_not_found" | "agent_pane_not_found" | "agent_not_found") => {
             Some(("agent_not_found", format!("agent pane {} no longer exists", target.pane_id)))
         }
@@ -505,7 +516,7 @@ fn describe(err: anyhow::Error, target: &Candidate) -> anyhow::Error {
     }
 }
 
-fn relative_path(file: &str, git: Option<&GitInfo>, cwd: &Path) -> String {
+pub fn relative_path(file: &str, git: Option<&GitInfo>, cwd: &Path) -> String {
     let path = Path::new(file);
     if let Some(git) = git {
         if let Ok(rel) = path.strip_prefix(&git.root) {
@@ -518,7 +529,7 @@ fn relative_path(file: &str, git: Option<&GitInfo>, cwd: &Path) -> String {
     file.to_string()
 }
 
-fn truncate_code(code: &str, max_lines: usize) -> String {
+pub fn truncate_code(code: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = code.lines().collect();
     if lines.len() <= max_lines {
         return code.trim_end_matches('\n').to_string();

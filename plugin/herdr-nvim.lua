@@ -13,6 +13,29 @@ local function hn()
 end
 
 local cmd = vim.api.nvim_create_user_command
+cmd("HerdrAsk", function(o)
+  hn().ask({
+    line1 = o.range > 0 and o.line1 or nil,
+    line2 = o.range > 0 and o.line2 or nil,
+    message = o.args ~= "" and o.args or nil,
+    force = o.bang,
+  })
+end, {
+  range = true,
+  bang = true,
+  nargs = "*",
+  desc = "herdr-nvim: ask the agent about this line or range (! forces a blocked agent)",
+})
+cmd("HerdrReply", function(o)
+  hn().reply({ message = o.args ~= "" and o.args or nil, force = o.bang })
+end, {
+  bang = true,
+  nargs = "*",
+  desc = "herdr-nvim: follow up with the agent you last asked",
+})
+cmd("HerdrAskTarget", function(o)
+  hn().ask_target({ clear = o.bang })
+end, { bang = true, desc = "herdr-nvim: choose the agent :HerdrAsk talks to (! forgets it)" })
 cmd("HerdrAnnotate", function(o)
   hn().annotate(o.range > 0 and { line1 = o.line1, line2 = o.line2 } or nil)
 end, { range = true, desc = "herdr-nvim: annotate the current line or range" })

@@ -200,6 +200,27 @@ function M.check()
     end
   end
 
+  health.start("herdr-nvim: ask")
+  if bin then
+    -- lazy.nvim's `build` does not re-run on every update, so "new Lua, old
+    -- binary" is a realistic first report. It would otherwise surface only as
+    -- an opaque `unknown command \`ask\`` on stderr.
+    local usage = capture({ bin, "help" })
+    if usage == nil then
+      health.warn("could not run `" .. bin .. " help`")
+    elseif usage:find("\n  ask ", 1, true) then
+      health.ok("the binary supports `ask`")
+    else
+      health.error("this binary predates :HerdrAsk; rebuild it with `cargo build --release`")
+    end
+  end
+  local target = require("herdr-nvim.ask").target()
+  if target then
+    health.info("follow-ups go to " .. (target.agent or "agent") .. " (" .. tostring(target.pane_id) .. ")")
+  else
+    health.info("no agent remembered yet; the first :HerdrAsk picks one")
+  end
+
   health.start("herdr-nvim: file picker")
   -- $HOME can legitimately be unset (a bare service manager, `env -i`), and
   -- concatenating nil would abort the whole health report.

@@ -9,6 +9,10 @@ local defaults = {
   keymaps = true, -- true | false | "force" (override existing mappings)
   binary = nil, -- path to the herdr-nvim binary (auto-detected when nil)
   prompt = "Comment: ",
+  -- Ask (:HerdrAsk): the composer float and where its message goes.
+  ask_height = 5, -- initial composer height; it grows as you type
+  ask_send_key = "<C-s>", -- <CR> in normal mode always sends too
+  focus_after_ask = true, -- focus the agent pane so you see the reply arrive
   clear_on_send = true, -- forget annotations after <leader>aS succeeds
   clear_on_paste = false, -- after <leader>as: false marks them delivered instead
   focus_after_send = false, -- focus the agent pane after delivery
@@ -40,6 +44,7 @@ local function define_highlights()
   hl(0, "HerdrNvimAnnotation", { link = "DiffChange", default = true })
   hl(0, "HerdrNvimSign", { link = "DiagnosticSignInfo", default = true })
   hl(0, "HerdrNvimVirt", { link = "DiagnosticVirtualTextInfo", default = true })
+  hl(0, "HerdrNvimAskRange", { link = "Visual", default = true })
   hl(0, "HerdrNvimListLoc", { link = "Directory", default = true })
   hl(0, "HerdrNvimStale", { link = "Comment", default = true })
   hl(0, "HerdrNvimDelivered", { link = "DiagnosticVirtualTextOk", default = true })
@@ -56,12 +61,30 @@ local keymaps = {
     "n",
     "<leader>ac",
     function()
-      M.annotate()
+      M.ask()
     end,
-    "comment the current line",
+    "ask the agent about this line",
   },
   -- `:` from Visual mode inserts the '<,'> range itself; the command takes it.
-  { "x", "<leader>ac", ":HerdrAnnotate<CR>", "comment the selection" },
+  -- A leading <C-u> would wipe that range, so never add one.
+  { "x", "<leader>ac", ":HerdrAsk<CR>", "ask the agent about this selection" },
+  {
+    "n",
+    "<leader>ar",
+    function()
+      M.reply()
+    end,
+    "follow up with the agent you last asked",
+  },
+  {
+    "n",
+    "<leader>aa",
+    function()
+      M.annotate()
+    end,
+    "queue a comment on the current line",
+  },
+  { "x", "<leader>aa", ":HerdrAnnotate<CR>", "queue a comment on the selection" },
   {
     "n",
     "<leader>al",
@@ -112,6 +135,12 @@ local keymaps = {
   },
 }
 
+-- lhs this plugin used to set but no longer does. apply_keymaps only deletes
+-- lhs present in the table above, so without this an in-session upgrade would
+-- strand the old mapping. Only our own are touched, so a user mapping that has
+-- since claimed the key survives.
+local retired = {}
+
 local function is_ours(mapping)
   return type(mapping) == "table"
     and type(mapping.desc) == "string"
@@ -119,6 +148,11 @@ local function is_ours(mapping)
 end
 
 local function apply_keymaps(mode)
+  for _, map in ipairs(retired) do
+    if is_ours(vim.fn.maparg(map[2], map[1], false, true)) then
+      pcall(vim.keymap.del, map[1], map[2])
+    end
+  end
   for _, map in ipairs(keymaps) do
     local existing = vim.fn.maparg(map[2], map[1], false, true)
     local taken = type(existing) == "table" and next(existing) ~= nil
@@ -275,7 +309,11 @@ local function input(prompt, default, callback)
   end)
 end
 
-local function current_range(opts)
+--- The 0-indexed, inclusive row range an action applies to: an explicit
+--- `{line1, line2}` from a :[range] command, else the visual selection, else
+--- the cursor line. Exported because `ask` needs it too — and it must run
+--- BEFORE any float opens, since the visual branch leaves visual mode itself.
+function M.current_range(opts)
   if opts and opts.line1 then
     return opts.line1 - 1, (opts.line2 or opts.line1) - 1
   end
@@ -303,7 +341,7 @@ function M.annotate(opts)
     notify("save the file first: unnamed buffers cannot be sent to an agent", vim.log.levels.WARN)
     return
   end
-  local srow, erow = current_range(opts)
+  local srow, erow = M.current_range(opts)
   local existing = A.find_overlapping(buf, srow, erow)
   if existing then
     M.edit(existing.id)
@@ -325,6 +363,47 @@ function M.edit(id, after)
       after()
     end
   end)
+end
+
+--- Ask the agent about the current line, the visual selection, or an explicit
+--- range (`opts = { line1 = n, line2 = m }`). `opts.message` skips the composer
+--- and sends immediately; `opts.no_context` attaches no code at all.
+function M.ask(opts)
+  opts = opts or {}
+  local ask = require("herdr-nvim.ask")
+  local ctx
+  if not opts.no_context then
+    local buf = vim.api.nvim_get_current_buf()
+    local file = vim.api.nvim_buf_get_name(buf)
+    -- Take the range first: current_range leaves visual mode itself, and that
+    -- has to happen before the composer takes the focus.
+    local srow, erow = M.current_range(opts)
+    if vim.bo[buf].buftype == "" and file ~= "" then
+      ctx = { buf = buf, srow = srow, erow = erow, file = file }
+    end
+  end
+  local message = opts.message and vim.trim(opts.message) or ""
+  if message ~= "" then
+    ask.send(message, ctx, { force = opts.force })
+    return
+  end
+  ask.open({ ctx = ctx, force = opts.force })
+end
+
+--- Keep talking to the agent you last asked, with no code attached.
+function M.reply(opts)
+  M.ask(vim.tbl_extend("force", opts or {}, { no_context = true }))
+end
+
+--- Choose (or forget) the agent that :HerdrAsk talks to.
+function M.ask_target(opts)
+  local ask = require("herdr-nvim.ask")
+  if (opts or {}).clear then
+    ask.forget_target()
+    notify("forgot the remembered agent; the next ask resolves one")
+    return
+  end
+  ask.retarget()
 end
 
 function M.list()

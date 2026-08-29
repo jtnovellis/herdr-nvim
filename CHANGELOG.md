@@ -8,6 +8,22 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Ask an agent about the code you are looking at.** `<leader>ac` (Normal or
+  Visual) opens a composer float over the current line or selection; type a
+  message, press `<C-s>`, and it goes straight to the agent with `file:line`,
+  the code and git context attached — no queue to flush. `<leader>ar`
+  (`:HerdrReply`) continues the conversation with no code attached. The
+  agent's pane is remembered so follow-ups need no picker, and is forgotten
+  and re-resolved automatically when it goes away. New commands
+  `:HerdrAsk[!] [message]` (accepts a range; a message on the command line
+  skips the composer), `:HerdrReply[!] [message]` and `:HerdrAskTarget[!]`;
+  new options `ask_height`, `ask_send_key`, `focus_after_ask`; new highlight
+  `HerdrNvimAskRange`. The reply appears in the agent's own Herdr pane —
+  `agent.prompt` answers with lifecycle state, never text, so there is nothing
+  to stream back into Neovim.
+- `:checkhealth herdr-nvim` reports when the Rust binary predates `:HerdrAsk`,
+  which is what "new Lua, old binary" looks like after an update that did not
+  re-run the build step.
 - Prebuilt release binaries for macOS (arm64, x86_64) and Linux (x86_64,
   aarch64). `herdr plugin install` now downloads one instead of requiring a
   Rust toolchain, falling back to `cargo build --release` when there is no
@@ -26,6 +42,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`<leader>ac` now asks the agent instead of queueing a comment.** Annotating
+  moved to `<leader>aa` (Normal and Visual); everything else about the queue —
+  `<leader>al`, `<leader>as`, `<leader>aS`, `]a`/`[a`, `:HerdrAnnotate` and
+  friends — is unchanged.
+- The blocked-agent message no longer names `:HerdrSend!` specifically, since
+  `:HerdrAsk!` reaches the same check.
 - Every Herdr call goes over the session socket instead of spawning the
   `herdr` CLI (~8.7 ms → ~1.0 ms per call; a sidebar toggle makes 15–20).
 - The daemon is driven over its own msgpack-rpc socket instead of spawning

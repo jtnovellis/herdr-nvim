@@ -5,8 +5,9 @@
 //! * `toggle` / `open` / `close` / `edit` — actions that manage the per-tab sidebar
 //! * `sidebar`                            — the pane command that attaches a UI client
 //! * `event` / `startup` / `gc`           — daemon lifecycle (tabs closing, restarts)
-//! * `send` / `agents` / `title`          — called by the Lua plugin
+//! * `ask` / `send` / `agents` / `title`    — called by the Lua plugin
 
+mod ask;
 mod candidates;
 mod config;
 mod context;
@@ -75,6 +76,7 @@ fn run(args: &[String]) -> Result<i32> {
         "event" => daemon::handle_event(),
         "startup" | "gc" => daemon::gc(),
         "send" => send::send(rest),
+        "ask" => ask::ask(rest),
         "agents" => send::list_agents(rest),
         "status" => state::print_status(),
         "version" | "--version" | "-V" => {
@@ -114,6 +116,9 @@ Daemons:
 
 Agents (used by the Neovim plugin):
   agents              List agents visible from here as JSON
+  ask [--target T] [--force] [--focus] [--file PATH] [--dry-run] [--paste]
+                      Read one message (plus an optional code selection) as
+                      JSON from stdin and send it to an agent
   send [--submit|--paste] [--target T] [--force] [--focus] [--file PATH] [--dry-run]
                       Read annotations JSON from stdin (or --file) and paste
                       them into an agent's input; --submit presses Enter

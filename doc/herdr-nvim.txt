@@ -14,13 +14,14 @@ CONTENTS                                                  *herdr-nvim-contents*
   5. Mappings .................... |herdr-nvim-mappings|
   6. Configuration ............... |herdr-nvim-config|
   7. The sidebar ................. |herdr-nvim-sidebar|
-  8. Annotations ................. |herdr-nvim-annotations|
-  9. File picker ................. |herdr-nvim-picker|
- 10. Statusline .................. |herdr-nvim-statusline|
- 11. Events ..................... |herdr-nvim-events|
- 12. Highlights .................. |herdr-nvim-highlights|
- 13. Health ..................... |herdr-nvim-health|
- 14. Troubleshooting ............. |herdr-nvim-troubleshooting|
+  8. Ask ......................... |herdr-nvim-ask|
+  9. Annotations ................. |herdr-nvim-annotations|
+ 10. File picker ................. |herdr-nvim-picker|
+ 11. Statusline .................. |herdr-nvim-statusline|
+ 12. Events ..................... |herdr-nvim-events|
+ 13. Highlights .................. |herdr-nvim-highlights|
+ 14. Health ..................... |herdr-nvim-health|
+ 15. Troubleshooting ............. |herdr-nvim-troubleshooting|
 
 ==============================================================================
 1. INTRODUCTION                                       *herdr-nvim-introduction*
@@ -75,6 +76,23 @@ keybindings and `herdr plugin install`.
 ==============================================================================
 4. COMMANDS                                               *herdr-nvim-commands*
 
+                                                                     *:HerdrAsk*
+:[range]HerdrAsk[!] [message]
+                        Ask the agent about the current line, or [range] when
+                        given. Opens a composer float; type your message and
+                        press CTRL-S (or <CR> in Normal mode) to send. A
+                        [message] on the command line skips the composer. `!`
+                        forces delivery to an agent Herdr reports as blocked.
+
+                                                                   *:HerdrReply*
+:HerdrReply[!] [message]
+                        Keep talking to the agent you last asked, with no code
+                        attached. Same composer, same `!`.
+
+                                                               *:HerdrAskTarget*
+:HerdrAskTarget[!]      Choose which agent |:HerdrAsk| talks to. `!` forgets
+                        the remembered one so the next ask resolves again.
+
                                                                 *:HerdrAnnotate*
 :[range]HerdrAnnotate   Attach a comment to the current line, or to [range]
                         when given. Prompts with |vim.ui.input()|. Annotating
@@ -124,7 +142,9 @@ keybindings and `herdr plugin install`.
 
 Defaults, created unless `keymaps = false`:
 
-    <leader>ac   n, x   comment the current line or selection
+    <leader>ac   n, x   ask the agent about the current line or selection
+    <leader>ar   n      follow up with the agent, no code attached
+    <leader>aa   n, x   queue a comment on the current line or selection
     <leader>al   n      list annotations
     <leader>as   n      paste annotations into the agent's input
     <leader>aS   n      send annotations to the agent
@@ -151,6 +171,9 @@ Defaults: >lua
       keymaps = true,          -- true | false | "force"
       binary = nil,            -- path to the herdr-nvim binary; nil = detect
       prompt = "Comment: ",
+      ask_height = 5,          -- composer height; it grows as you type
+      ask_send_key = "<C-s>",  -- <CR> in Normal mode always sends too
+      focus_after_ask = true,  -- focus the agent pane after an ask
       clear_on_send = true,    -- forget annotations after a successful send
       clear_on_paste = false,  -- after a paste, mark delivered instead
       focus_after_send = false,-- focus the agent's pane after delivery
@@ -190,7 +213,54 @@ over the socket. Cursor and scroll animation plugins are noticeably smoother
 when disabled there. Gate them on `vim.env.HERDR_NVIM_DAEMON == "1"`.
 
 ==============================================================================
-8. ANNOTATIONS                                         *herdr-nvim-annotations*
+8. ASK                                                         *herdr-nvim-ask*
+
+Select the lines you want to talk about (or just sit on one), press
+`<leader>ac`, type your message, CTRL-S. The message reaches the agent
+immediately — there is no queue to flush.
+
+In the composer float:
+
+    CTRL-S              send
+    <CR>      (Normal)  send
+    CTRL-C              cancel
+    <Esc>     (Normal)  cancel
+
+CTRL-S is XON/XOFF flow control on a terminal that has not run `stty -ixon`,
+so it can be swallowed before Neovim sees it. <CR> in Normal mode always
+works, and `ask_send_key` rebinds it.
+
+The lines you are asking about stay highlighted while you type, with
+`HerdrNvimAskRange` (see |herdr-nvim-highlights|). The box keeps your text if
+it loses focus; only an explicit cancel or a successful send discards it.
+
+The agent receives the location, the repository and branch, the code as a
+fenced block (capped by `HERDR_NVIM_MAX_SNIPPET_LINES`, default 80) and your
+message last. |:HerdrReply| sends the message on its own: the agent already
+has the code from the previous turn.
+
+                                                          *herdr-nvim-ask-reply*
+The reply appears in the agent's own Herdr pane, not in Neovim. Herdr's
+`agent.prompt` types a string into the agent's terminal and answers with
+lifecycle state, never text — there is no conversation object and no streaming
+to read back. `focus_after_ask` (on by default) focuses that pane so you see
+the answer arrive.
+
+                                                         *herdr-nvim-ask-target*
+The first ask resolves a target the way |:HerdrSend| does: the lone agent in
+the workspace, or the single agent sharing this tab, otherwise a
+|vim.ui.select()| picker. That pane is then remembered and follow-ups go to it
+without asking again. If it disappears, the next ask forgets it and resolves
+once more. |:HerdrAskTarget| picks a different one.
+
+An agent waiting at an approval prompt is refused with `agent_blocked` — Herdr
+will not send it any bytes at all. Answer it, or use `:HerdrAsk!`.
+
+Asks and annotation sends share one in-flight lock, so the two can never race
+into the same pane.
+
+==============================================================================
+9. ANNOTATIONS                                         *herdr-nvim-annotations*
 
 An annotation is a comment attached to a line or range, tracked with an
 extmark so it follows edits. Annotations survive a reload of the file, and an
@@ -209,7 +279,7 @@ When more than one agent could receive the annotations, |vim.ui.select()| asks
 which one.
 
 ==============================================================================
-9. FILE PICKER                                              *herdr-nvim-picker*
+10. FILE PICKER                                             *herdr-nvim-picker*
 
 |:HerdrPickFile| lists the files the agent touched this session, newest first,
 with diff stats and an age. Typing searches the whole repository. <CR> opens
@@ -221,7 +291,7 @@ during the session, diff stats, tracked and untracked files), and finally
 paths scraped from the agent pane's scrollback.
 
 ==============================================================================
-10. STATUSLINE                                          *herdr-nvim-statusline*
+11. STATUSLINE                                          *herdr-nvim-statusline*
 
                                               *herdr-nvim.statusline()*
 `require("herdr-nvim").statusline()` returns a short indicator such as `● 3`
@@ -230,7 +300,7 @@ for three pending annotations, or an empty string when there are none: >lua
     vim.o.statusline = "%f %{v:lua.require('herdr-nvim').statusline()}"
 <
 ==============================================================================
-11. EVENTS                                                  *herdr-nvim-events*
+12. EVENTS                                                  *herdr-nvim-events*
 
                                         *HerdrNvimAnnotationsChanged*
 A |User| autocommand fires whenever the annotation set changes, so a
@@ -242,11 +312,12 @@ statusline or winbar can refresh: >lua
     })
 <
 ==============================================================================
-12. HIGHLIGHTS                                          *herdr-nvim-highlights*
+13. HIGHLIGHTS                                          *herdr-nvim-highlights*
 
 All groups are defined with `default = true` and linked to standard groups, so
 any colorscheme works and any of them can be overridden:
 
+    HerdrNvimAskRange        Visual
     HerdrNvimAnnotation      DiffChange
     HerdrNvimSign            DiagnosticSignInfo
     HerdrNvimVirt            DiagnosticVirtualTextInfo
@@ -261,7 +332,7 @@ any colorscheme works and any of them can be overridden:
 They are re-applied on |ColorScheme|.
 
 ==============================================================================
-13. HEALTH                                                  *herdr-nvim-health*
+14. HEALTH                                                  *herdr-nvim-health*
 
 >vim
     :checkhealth herdr-nvim
@@ -272,7 +343,7 @@ the reload watcher, the agents currently visible, the picker's prerequisites,
 and how many annotations are pending.
 
 ==============================================================================
-14. TROUBLESHOOTING                                *herdr-nvim-troubleshooting*
+15. TROUBLESHOOTING                                *herdr-nvim-troubleshooting*
 
 The sidebar does not open ~
     1. `herdr plugin list` — is herdr-nvim linked and enabled?
