@@ -64,10 +64,14 @@ jobs:
           declared=$(sed -n 's/^rust-version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
           echo "Cargo.toml declares $declared"
           test "$declared" = "1.82"
-          # A rust-toolchain.toml would silently override the pin above and
-          # make this job test stable instead of the MSRV.
+          # A rust-toolchain.toml outranks the `rustup default` the action
+          # above sets, so its presence would silently make this job test
+          # stable instead of the MSRV. herdr-worktree-setup keeps such a file
+          # and has to force the toolchain with RUSTUP_TOOLCHAIN; this repo
+          # has none, so absence is the thing to assert.
           test ! -e rust-toolchain.toml && test ! -e rust-toolchain
-          rustc --version | grep -q '1\.82'
+          rustc --version
+          rustc --version | grep -q '^rustc 1\.82\.'
       - run: cargo check --locked --all-targets
 
   deps:
