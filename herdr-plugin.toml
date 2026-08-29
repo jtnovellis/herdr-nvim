@@ -5,10 +5,13 @@ min_herdr_version = "0.8.2"
 description = "Per-tab Neovim sidebars backed by headless daemons, plus code annotations you can send to any agent in the workspace."
 platforms = ["linux", "macos"]
 
-# `herdr plugin install` builds the Rust binary. `herdr plugin link` does not run
-# build commands: run `cargo build --release` yourself when developing locally.
+# `herdr plugin install` runs this. The script downloads the prebuilt binary
+# for this platform and falls back to `cargo build --release`, so a Rust
+# toolchain is only needed when there is no matching release asset.
+# `herdr plugin link` does NOT run build commands: run `cargo build --release`
+# (or `make`) yourself when developing locally.
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["sh", "scripts/build.sh"]
 platforms = ["linux", "macos"]
 
 # Reconcile daemons after Herdr restores a session: drop dead records and stop

@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      # `scripts/build.sh` expects a bare `herdr-nvim` at the archive root.
+      - name: Package
+        run: |
+          set -eu
+          bin="target/${{ matrix.target }}/release/herdr-nvim"
+          test -x "$bin"
+          tar -czf "herdr-nvim-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" herdr-nvim
+          shasum -a 256 "herdr-nvim-${{ matrix.target }}.tar.gz" > "herdr-nvim-${{ matrix.target }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            herdr-nvim-*.tar.gz
+            herdr-nvim-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The manifest version is what scripts/build.sh puts in the asset URL, so
+      # a tag that disagrees with it would produce a release nobody can install.
+      - name: Check the tag matches Cargo.toml and herdr-plugin.toml
+        run: |
+          set -eu
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="${tag#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          manifest_version=$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml | head -1)
+          echo "tag=$want cargo=$cargo_version manifest=$manifest_version"
+          test "$want" = "$cargo_version" || { echo "::error::Cargo.toml is $cargo_version, tag is $want"; exit 1; }
+          test "$want" = "$manifest_version" || { echo "::error::herdr-plugin.toml is $manifest_version, tag is $want"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

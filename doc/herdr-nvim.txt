@@ -1,0 +1,297 @@
+*herdr-nvim.txt*   Neovim inside Herdr: sidebar daemons and code annotations
+
+Author:   Jairo Toro
+License:  MIT
+Homepage: https://github.com/jtnovellis/herdr-nvim
+
+==============================================================================
+CONTENTS                                                  *herdr-nvim-contents*
+
+  1. Introduction ................ |herdr-nvim-introduction|
+  2. Requirements ................ |herdr-nvim-requirements|
+  3. Setup ....................... |herdr-nvim-setup|
+  4. Commands .................... |herdr-nvim-commands|
+  5. Mappings .................... |herdr-nvim-mappings|
+  6. Configuration ............... |herdr-nvim-config|
+  7. The sidebar ................. |herdr-nvim-sidebar|
+  8. Annotations ................. |herdr-nvim-annotations|
+  9. File picker ................. |herdr-nvim-picker|
+ 10. Statusline .................. |herdr-nvim-statusline|
+ 11. Events ..................... |herdr-nvim-events|
+ 12. Highlights .................. |herdr-nvim-highlights|
+ 13. Health ..................... |herdr-nvim-health|
+ 14. Troubleshooting ............. |herdr-nvim-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                       *herdr-nvim-introduction*
+
+herdr-nvim runs Neovim natively inside Herdr. It has two halves that ship
+together:
+
+- A Herdr plugin (a Rust binary) that keeps one headless Neovim daemon per
+  Herdr tab and shows it as a full-height sidebar you can toggle without
+  losing state.
+- This Neovim plugin, which adds Cursor-style code annotations you send to
+  the AI agents running in your workspace, reloads files those agents edit,
+  and opens a fuzzy picker over the files they touched.
+
+Both halves are useful on their own: the annotation commands work in any
+Neovim that can find the `herdr-nvim` binary, whether or not it is running
+inside a sidebar.
+
+==============================================================================
+2. REQUIREMENTS                                       *herdr-nvim-requirements*
+
+- Neovim 0.11 or newer (for `--remote-ui` and `:detach`)
+- Herdr 0.8.2 or newer
+- Linux or macOS
+- Rust 1.82 or newer, to build the binary
+- git (optional; enables dirty files, diff stats and repo-wide picker search)
+
+The plugin refuses to load on older Neovim with an error message.
+
+==============================================================================
+3. SETUP                                                     *herdr-nvim-setup*
+
+The Neovim side calls |herdr-nvim.setup()| automatically when it loads, so a
+plain runtimepath install needs no configuration at all. Call it yourself only
+to pass options: >lua
+
+    require("herdr-nvim").setup({
+      keymaps = true,
+      signs = false,
+    })
+<
+                                                *g:herdr_nvim_no_defaults*
+Set `vim.g.herdr_nvim_no_defaults = true` before the plugin loads to suppress
+the automatic call, then call `setup()` when you are ready.
+
+Repeated `setup()` calls merge into the current configuration rather than
+resetting it, so options set by an earlier call survive a later one.
+
+The Herdr side is installed separately; see the README for the manifest,
+keybindings and `herdr plugin install`.
+
+==============================================================================
+4. COMMANDS                                               *herdr-nvim-commands*
+
+                                                                *:HerdrAnnotate*
+:[range]HerdrAnnotate   Attach a comment to the current line, or to [range]
+                        when given. Prompts with |vim.ui.input()|. Annotating
+                        a range that overlaps an existing annotation edits
+                        that one instead of adding a second.
+
+                                                             *:HerdrAnnotations*
+:HerdrAnnotations       Open the annotation list in a float. Moving the cursor
+                        previews the annotated location; <CR> jumps to it and
+                        closes the list, `d` deletes, `o` goes without closing.
+
+                                                                   *:HerdrPaste*
+:HerdrPaste[!]          Paste every pending annotation into the agent's input
+                        without submitting. `!` forces delivery to an agent
+                        Herdr reports as blocked.
+
+                                                                    *:HerdrSend*
+:HerdrSend[!]           Same, then press Enter so the agent starts working.
+
+                                                                 *:HerdrPreview*
+:HerdrPreview           Show the exact prompt that would be sent, in a scratch
+                        split. Nothing is delivered.
+
+                                                                   *:HerdrClear*
+:HerdrClear             Forget every annotation, pending or delivered.
+
+                                                                  *:HerdrAgents*
+:HerdrAgents            List the agents visible from here, with the workspace
+                        and pane each one runs in.
+
+                                                                *:HerdrPickFile*
+:HerdrPickFile          Fuzzy-pick a file the agent touched this session, or
+                        any file in the repository once you type.
+
+                                                     *:HerdrNext* *:HerdrPrev*
+:HerdrNext              Jump to the next annotation.
+:HerdrPrev              Jump to the previous one.
+
+                                                                  *:HerdrDetach*
+:HerdrDetach            Detach this sidebar client, leaving the daemon
+                        running. Only defined inside a sidebar daemon
+                        (`$HERDR_NVIM_DAEMON` is 1) on a Neovim that has
+                        `:detach`; elsewhere it does not exist.
+
+==============================================================================
+5. MAPPINGS                                               *herdr-nvim-mappings*
+
+Defaults, created unless `keymaps = false`:
+
+    <leader>ac   n, x   comment the current line or selection
+    <leader>al   n      list annotations
+    <leader>as   n      paste annotations into the agent's input
+    <leader>aS   n      send annotations to the agent
+    <leader>af   n      pick a file the agent touched
+    ]a           n      next annotation
+    [a           n      previous annotation
+
+An existing mapping is never clobbered: if `<leader>al` is already taken by
+something else, that mapping is left alone and the default is skipped
+silently. Use `keymaps = "force"` to override anyway, or `keymaps = false` to
+remove only the mappings this plugin created.
+
+Note that LazyVim maps `]a` and `[a` buffer-locally to treesitter parameter
+motions, which win inside code buffers. Use |:HerdrNext| and |:HerdrPrev|, or
+map them yourself.
+
+==============================================================================
+6. CONFIGURATION                                            *herdr-nvim-config*
+
+                                                       *herdr-nvim.setup()*
+Defaults: >lua
+
+    require("herdr-nvim").setup({
+      keymaps = true,          -- true | false | "force"
+      binary = nil,            -- path to the herdr-nvim binary; nil = detect
+      prompt = "Comment: ",
+      clear_on_send = true,    -- forget annotations after a successful send
+      clear_on_paste = false,  -- after a paste, mark delivered instead
+      focus_after_send = false,-- focus the agent's pane after delivery
+      notify = true,           -- false silences INFO; warnings still show
+      signs = false,           -- true uses the sign column, not the number
+      statusline_icon = "●",
+
+      -- Only active inside a sidebar daemon ($HERDR_NVIM_DAEMON = 1):
+      quit_guard = true,       -- :q on the last window detaches
+      reload = { enabled = true, debounce_ms = 200 },
+      pane_title = true,       -- show the current file as the pane title
+    })
+<
+Unknown top-level keys produce a warning, so a typo is visible rather than
+silently ignored.
+
+The Rust half is configured separately through `config.env` in the plugin
+config directory (`herdr plugin config-dir herdr-nvim`); see the README. Note
+that Herdr does not forward your shell environment to a plugin action, so
+exporting `HERDR_NVIM_*` variables in your shell does not affect the sidebar
+— put them in `config.env`.
+
+==============================================================================
+7. THE SIDEBAR                                             *herdr-nvim-sidebar*
+
+Each Herdr tab gets its own headless Neovim daemon. Toggling the sidebar
+attaches or detaches a UI client; the daemon, and everything in it, survives.
+Closing the tab stops the daemon, saving modified buffers first unless
+`HERDR_NVIM_SAVE_ON_CLOSE=0`.
+
+Inside a sidebar, `:q` on the last window detaches the client instead of
+quitting the daemon (see `quit_guard`). `:qa` really does quit it.
+
+                                                     *herdr-nvim-animations*
+The sidebar UI is a remote client: every animation frame is a full grid redraw
+over the socket. Cursor and scroll animation plugins are noticeably smoother
+when disabled there. Gate them on `vim.env.HERDR_NVIM_DAEMON == "1"`.
+
+==============================================================================
+8. ANNOTATIONS                                         *herdr-nvim-annotations*
+
+An annotation is a comment attached to a line or range, tracked with an
+extmark so it follows edits. Annotations survive a reload of the file, and an
+undo that restores a deleted line revives its annotation.
+
+An annotation whose lines have changed since it was written is *stale*: it is
+kept, shown dimmed in the list, and excluded from what gets sent. |:HerdrClear|
+forgets everything.
+
+Sending includes, for each annotation, the file, the line range, the comment
+and the code itself (capped by `HERDR_NVIM_MAX_SNIPPET_LINES`, default 80),
+plus a header naming the repository and branch. |:HerdrPreview| shows exactly
+what would go.
+
+When more than one agent could receive the annotations, |vim.ui.select()| asks
+which one.
+
+==============================================================================
+9. FILE PICKER                                              *herdr-nvim-picker*
+
+|:HerdrPickFile| lists the files the agent touched this session, newest first,
+with diff stats and an age. Typing searches the whole repository. <CR> opens
+the selection at the line the agent edited; <C-n>/<C-p> or the arrow keys
+move; <Esc> closes.
+
+Sources, in order: the agent's session log, git (dirty files, commits made
+during the session, diff stats, tracked and untracked files), and finally
+paths scraped from the agent pane's scrollback.
+
+==============================================================================
+10. STATUSLINE                                          *herdr-nvim-statusline*
+
+                                              *herdr-nvim.statusline()*
+`require("herdr-nvim").statusline()` returns a short indicator such as `● 3`
+for three pending annotations, or an empty string when there are none: >lua
+
+    vim.o.statusline = "%f %{v:lua.require('herdr-nvim').statusline()}"
+<
+==============================================================================
+11. EVENTS                                                  *herdr-nvim-events*
+
+                                        *HerdrNvimAnnotationsChanged*
+A |User| autocommand fires whenever the annotation set changes, so a
+statusline or winbar can refresh: >lua
+
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "HerdrNvimAnnotationsChanged",
+      callback = function() vim.cmd.redrawstatus() end,
+    })
+<
+==============================================================================
+12. HIGHLIGHTS                                          *herdr-nvim-highlights*
+
+All groups are defined with `default = true` and linked to standard groups, so
+any colorscheme works and any of them can be overridden:
+
+    HerdrNvimAnnotation      DiffChange
+    HerdrNvimSign            DiagnosticSignInfo
+    HerdrNvimVirt            DiagnosticVirtualTextInfo
+    HerdrNvimListLoc         Directory
+    HerdrNvimStale           Comment
+    HerdrNvimDelivered       DiagnosticVirtualTextOk
+    HerdrNvimPickerMatch     Special
+    HerdrNvimPickerDiff      DiffAdd
+    HerdrNvimPickerNew       DiagnosticVirtualTextWarn
+    HerdrNvimPickerAge       Comment
+
+They are re-applied on |ColorScheme|.
+
+==============================================================================
+13. HEALTH                                                  *herdr-nvim-health*
+
+>vim
+    :checkhealth herdr-nvim
+<
+Reports the Neovim version, the `herdr-nvim` binary and where it was found,
+whether Herdr is reachable and this is a Herdr pane, sidebar daemon state and
+the reload watcher, the agents currently visible, the picker's prerequisites,
+and how many annotations are pending.
+
+==============================================================================
+14. TROUBLESHOOTING                                *herdr-nvim-troubleshooting*
+
+The sidebar does not open ~
+    1. `herdr plugin list` — is herdr-nvim linked and enabled?
+    2. `herdr plugin log list --plugin herdr-nvim` — the action's own output.
+    3. `herdr-nvim status` — daemon records and whether each is running.
+    4. The daemon log, `~/.local/state/herdr/plugins/herdr-nvim/logs/`, has
+       Neovim's own startup output. It is truncated on every daemon start.
+
+`prefix+e` does nothing ~
+    Herdr binds `prefix+e` to its built-in scrollback editor by default. Move
+    it (`edit_scrollback = "prefix+shift+e"`) before binding the toggle, then
+    `herdr server reload-config`.
+
+Sends go to the wrong agent ~
+    |:HerdrAgents| lists what is visible from here. Delivery prefers an agent
+    in the same workspace; when several qualify you are asked.
+
+A file the agent edited did not reload ~
+    Only unmodified buffers are reloaded. A modified buffer is left alone and
+    flagged once; `:e!` takes the version on disk.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

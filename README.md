@@ -21,6 +21,8 @@ Neovim integration for [Herdr](https://herdr.dev).
 The Herdr side is a single Rust binary that serves every manifest entrypoint;
 the Neovim side is a small Lua plugin that shells out to that binary.
 
+Full reference: `:help herdr-nvim` (or [doc/herdr-nvim.txt](doc/herdr-nvim.txt)).
+
 ## Requirements
 
 - Herdr 0.8.2 or newer, on Linux or macOS
@@ -93,16 +95,38 @@ The same repository is the Neovim plugin. With lazy.nvim:
 ```lua
 {
   "jtnovellis/herdr-nvim",
-  build = "cargo build --release",
+  build = "sh scripts/build.sh",
   opts = {},
 }
 ```
 
-Or point at the checkout that Herdr links:
+Or point at the checkout that Herdr links, so both halves run the same binary:
 
 ```lua
-{ dir = "~/developer/herdr-nvim", build = "cargo build --release", opts = {} }
+{ dir = "~/developer/herdr-nvim", build = "sh scripts/build.sh", opts = {} }
 ```
+
+Loading it eagerly is fine — it costs about a millisecond — but it does
+register three global autocommands. To keep a plain Neovim untouched until you
+use it, lazy-load on the commands and keys:
+
+```lua
+{
+  "jtnovellis/herdr-nvim",
+  build = "sh scripts/build.sh",
+  -- The sidebar daemon needs it at startup for the reload watcher and the
+  -- quit guard; everywhere else it can wait.
+  lazy = vim.env.HERDR_NVIM_DAEMON ~= "1",
+  cmd = { "HerdrAnnotate", "HerdrAnnotations", "HerdrSend", "HerdrPaste",
+          "HerdrPreview", "HerdrPickFile", "HerdrAgents" },
+  keys = { "<leader>ac", "<leader>al", "<leader>as", "<leader>aS", "<leader>af" },
+  opts = {},
+}
+```
+
+Inside the sidebar the UI is a remote client, so every animation frame is a
+full grid redraw over the socket. Cursor and scroll animations are noticeably
+smoother when disabled there — gate them on `vim.env.HERDR_NVIM_DAEMON == "1"`.
 
 Inside a sidebar the daemon exports `HERDR_NVIM_BIN`, so the Lua plugin finds
 the binary Herdr built. Elsewhere it looks for `target/release/herdr-nvim`
@@ -135,7 +159,8 @@ Press your toggle key in any tab:
   restarts, and `gc` does the same on demand.
 
 Inside the sidebar, `:q` on the last window detaches the client instead of
-quitting the daemon (`:detach` and `:HerdrDetach` do the same); `:qa` quits
+quitting the daemon (`:detach` and `:HerdrDetach` do the same — `:HerdrDetach`
+is only defined inside a sidebar daemon); `:qa` quits
 the daemon itself, like in any Neovim, and the next toggle starts a new one.
 
 Daemons run in their own session (`setsid`), so they survive Herdr restarts.
@@ -179,8 +204,9 @@ herdr-nvim edit src/main.rs:42        # opens/focuses the sidebar at line 42
 herdr-nvim edit src/main.rs:42:7 --no-focus
 ```
 
-(`herdr-nvim` is `target/release/herdr-nvim` in the plugin directory; add it
-to `$PATH` or alias it.) The `edit` action does the same for the text
+(`herdr-nvim` is `target/release/herdr-nvim` in the plugin directory. To get it
+on `$PATH`: `cargo install --path .`, or symlink it with
+`ln -s "$PWD/target/release/herdr-nvim" ~/.local/bin/herdr-nvim`.) The `edit` action does the same for the text
 selected in a pane, or for a Ctrl-clicked `file://` link.
 
 ### Configuration
@@ -204,7 +230,10 @@ cp config.env.example "$(herdr plugin config-dir herdr-nvim)/config.env"
 | `HERDR_NVIM_PICKER_SCAN_LINES` | `300` | Pane lines scanned for paths when there is no session log |
 | `HERDR_NVIM_PICKER_MAX_FILES` | `20` | Session files shown before you type |
 
-Environment variables with the same names override the file.
+Environment variables with the same names override the file **when you run the
+binary yourself**. They do not reach a Herdr keybinding: `plugin action invoke`
+does not forward your shell environment, so `export HERDR_NVIM_SIDE=left` in
+`.zshrc` has no effect on the sidebar. Put it in `config.env`.
 
 ## Annotations
 
@@ -363,11 +392,14 @@ herdr action "toggle"                  herdr pane (split)
 ## Development
 
 ```sh
-cargo build --release && cargo test && cargo clippy --all-targets -- -D warnings
-scripts/lua-tests.sh     # headless Neovim checks
-scripts/e2e.sh           # full run against a throwaway headless Herdr session
-herdr plugin link .
+make test           # fmt, clippy, cargo test, headless Neovim checks — what CI runs
+make lua T=picker   # a single Neovim check
+make e2e            # full run against a throwaway headless Herdr session
+herdr plugin link . # register this checkout with Herdr (build first)
 ```
+
+`make e2e` writes to your real plugin state directory and briefly replaces your
+plugin `config.env`; it is not run in CI. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
