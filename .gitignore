@@ -1,3 +1,4 @@
 /target
-config.env
 *.log
+.DS_Store
+doc/tags
