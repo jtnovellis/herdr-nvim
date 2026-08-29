@@ -6,8 +6,9 @@ description = "Per-tab Neovim sidebars backed by headless daemons. Ask an agent 
 platforms = ["linux", "macos"]
 
 # `herdr plugin install` runs this. The script downloads the prebuilt binary
-# for this platform and falls back to `cargo build --release`, so a Rust
-# toolchain is only needed when there is no matching release asset.
+# for this platform (verifying its SHA-256) and falls back to `cargo build
+# --release --locked`, so a Rust toolchain is only needed when there is no
+# matching release asset. A checksum mismatch aborts the install.
 # `herdr plugin link` does NOT run build commands: run `cargo build --release`
 # (or `make`) yourself when developing locally.
 [[build]]

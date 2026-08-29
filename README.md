@@ -35,18 +35,33 @@ Full reference: `:help herdr-nvim` (or [doc/herdr-nvim.txt](doc/herdr-nvim.txt))
 
 - Herdr 0.8.2 or newer, on Linux or macOS
 - Neovim 0.11 or newer (`--remote-ui` and `:detach`)
-- A Rust toolchain (`cargo`, 1.82+) to build the binary
+- A Rust toolchain (`cargo`, 1.82+) **only** if there is no prebuilt binary
+  for your platform — installing normally downloads one
 - `git` for the branch/repo context in prompts (optional)
 
 ## Install
 
 ### 1. The Herdr plugin
 
-From GitHub (Herdr runs `cargo build --release` during install):
+From GitHub:
 
 ```sh
 herdr plugin install jtnovellis/herdr-nvim
 ```
+
+Herdr runs `scripts/build.sh`, which downloads the prebuilt binary for your
+platform, verifies its SHA-256 against the `SHA256SUMS` published with the same
+release, and only falls back to `cargo build --release --locked` when there is
+no matching asset. A checksum mismatch aborts the install rather than
+falling back. Release binaries carry Sigstore build provenance:
+
+```sh
+gh attestation verify --repo jtnovellis/herdr-nvim \
+  herdr-nvim-aarch64-apple-darwin.tar.gz
+```
+
+`HERDR_NVIM_NO_DOWNLOAD=1` always builds from source.
+[SECURITY.md](SECURITY.md) is the full trust model.
 
 Or from a local checkout while developing (`plugin link` does not build):
 

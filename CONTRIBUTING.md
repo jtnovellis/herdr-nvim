@@ -23,8 +23,13 @@ make test
 ```
 
 That is exactly what CI runs: `cargo fmt --check`, `cargo clippy --all-targets
--D warnings`, `cargo test`, and the headless Neovim suite. `make help` lists the
-rest.
+-D warnings`, `cargo test`, the headless Neovim suite, and the install-script
+checks. `make help` lists the rest.
+
+The one CI job `make test` leaves out is `make deny` (`cargo deny check`:
+advisories, licences, dependency sources), because it needs
+`cargo install cargo-deny`. CI also builds the release musl target and the
+MSRV, which `make test` does not.
 
 ## Tests
 
@@ -46,6 +51,14 @@ The suite needs only `nvim`. Checks that additionally want
 `target/release/herdr-nvim` or the `herdr` CLI relax their assertions when those
 are missing, so it passes on a bare CI runner.
 
+**Install script** — `make scripts` runs `scripts/build-tests.sh`, which
+exercises `scripts/build.sh`'s refusal paths with a stubbed `curl` and `cargo`:
+a failed download falls back to a source build, a checksum mismatch aborts
+without falling back, and a non-https origin is refused before anything is
+fetched. No network, no compilation. Change `build.sh` and this is the suite to
+extend — it runs on a user's machine during `herdr plugin install`, so its
+failure modes matter more than most.
+
 **End-to-end** — `make e2e` drives a real throwaway Herdr session (`hn-e2e`).
 It needs `herdr`, `nvim`, `cargo`, and `python3`, takes a few minutes, and is
 **not** run in CI.
@@ -66,3 +79,11 @@ so run it by hand before changing `sidebar.rs`, `layout.rs`, or `daemon.rs`.
   hand-rolled helper over a new dependency, and say why in the PR if you add one.
 - Code adapted from other projects goes in `THIRD_PARTY.md` with the upstream
   license.
+- GitHub Actions are pinned by commit SHA with the tag in a trailing comment.
+  Dependabot proposes the bumps; keep the comment in step with the pin.
+- Workflows declare an explicit least-privilege `permissions` block rather than
+  inheriting the repository default.
+- Releases are cut by pushing a `vX.Y.Z` tag. The tag must match both
+  `Cargo.toml` and `herdr-plugin.toml` or the release workflow refuses to
+  publish. `workflow_dispatch` on the Release workflow is a dry run: it builds,
+  attests and verifies every target without publishing anything.

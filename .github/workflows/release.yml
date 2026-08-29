@@ -3,83 +3,178 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Lets the release pipeline be exercised without cutting a release — useful
+  # after bumping the actions it depends on, which CI does not otherwise cover.
+  # A manual run builds, attests and verifies, then stops: it never publishes.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to build and publish (e.g. v0.1.0)"
-        required: true
 
-permissions:
-  contents: write
+# No blanket write token: only `publish` may touch the release, and only
+# `build` may sign for provenance.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BIN: herdr-nvim
+  CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    name: tag matches manifests
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The manifest version is what scripts/build.sh puts in the asset URL, so
+      # a tag that disagrees with it would produce a release nobody can install.
+      - run: |
+          tag=${GITHUB_REF_NAME#v}
+          cargo_v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
+          plugin_v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' herdr-plugin.toml | head -n1)
+          echo "tag=$tag cargo=$cargo_v plugin=$plugin_v"
+          test "$tag" = "$cargo_v" || { echo "::error::Cargo.toml is $cargo_v, tag is $tag"; exit 1; }
+          test "$tag" = "$plugin_v" || { echo "::error::herdr-plugin.toml is $plugin_v, tag is $tag"; exit 1; }
+
   build:
-    name: ${{ matrix.target }}
+    name: build (${{ matrix.target }})
+    needs: verify
+    # `verify` is skipped on a manual run; a skipped dependency must not skip
+    # the build, but a failed one must.
+    if: always() && needs.verify.result != 'failure' && needs.verify.result != 'cancelled'
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      # Keyless Sigstore signing for build provenance.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+          # musl, not gnu: a statically linked binary runs on any Linux the
+          # plugin might be installed on, rather than only on distributions
+          # whose glibc is at least as new as the runner's.
+          - { target: aarch64-apple-darwin,       os: macos-latest }
+          - { target: x86_64-apple-darwin,        os: macos-latest }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+      - name: musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target ${{ matrix.target }}
-      # `scripts/build.sh` expects a bare `herdr-nvim` at the archive root.
-      - name: Package
+      # scripts/build.sh extracts exactly one member named `herdr-nvim` from
+      # the archive root, so the layout below is part of the install contract.
+      - name: package
+        env:
+          # Keep macOS from folding xattrs into `._` AppleDouble members: the
+          # archive must contain the binary and nothing else.
+          COPYFILE_DISABLE: "1"
         run: |
           set -eu
-          bin="target/${{ matrix.target }}/release/herdr-nvim"
-          test -x "$bin"
-          tar -czf "herdr-nvim-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" herdr-nvim
-          shasum -a 256 "herdr-nvim-${{ matrix.target }}.tar.gz" > "herdr-nvim-${{ matrix.target }}.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+          asset="$BIN-${{ matrix.target }}.tar.gz"
+          test -x "target/${{ matrix.target }}/release/$BIN"
+          tar -czf "$asset" -C "target/${{ matrix.target }}/release" "$BIN"
+          # The layout scripts/build.sh depends on: exactly one member, at the
+          # archive root, named after the binary.
+          test "$(tar -tzf "$asset")" = "$BIN"
+          # sha256sum on Linux, shasum on macOS; both emit the same format.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+          cat "$asset.sha256"
+      - name: attest provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: ${{ env.BIN }}-${{ matrix.target }}.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.target }}
           path: |
-            herdr-nvim-*.tar.gz
-            herdr-nvim-*.tar.gz.sha256
+            ${{ env.BIN }}-${{ matrix.target }}.tar.gz
+            ${{ env.BIN }}-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
-  publish:
+  # Runs on every invocation, including a manual dry run: round-trips the
+  # artifacts and re-checks their digests, so the download path and the
+  # checksum file are exercised without needing a release to exist.
+  check-artifacts:
+    name: verify artifacts
     needs: build
+    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      # The manifest version is what scripts/build.sh puts in the asset URL, so
-      # a tag that disagrees with it would produce a release nobody can install.
-      - name: Check the tag matches Cargo.toml and herdr-plugin.toml
-        run: |
-          set -eu
-          tag="${{ inputs.tag || github.ref_name }}"
-          want="${tag#v}"
-          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          manifest_version=$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml | head -1)
-          echo "tag=$want cargo=$cargo_version manifest=$manifest_version"
-          test "$want" = "$cargo_version" || { echo "::error::Cargo.toml is $cargo_version, tag is $want"; exit 1; }
-          test "$want" = "$manifest_version" || { echo "::error::herdr-plugin.toml is $manifest_version, tag is $want"; exit 1; }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
           merge-multiple: true
-      - run: ls -la dist
-      - uses: softprops/action-gh-release@v2
+      - name: every target is present and matches its checksum
+        run: |
+          set -eu
+          cd dist
+          cat *.sha256 | sort -k2 > SHA256SUMS
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            test -f "$BIN-$t.tar.gz" || { echo "::error::missing $t"; exit 1; }
+          done
+          sha256sum --check SHA256SUMS
+          # Re-check the archive layout after a full upload/download round trip.
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            test "$(tar -tzf "$BIN-$t.tar.gz")" = "$BIN"
+          done
+          echo "all four targets present, checksums verified"
+
+  publish:
+    name: publish release
+    needs: [build, check-artifacts]
+    # Only a tag publishes. A manual run stops after build + attest + verify.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          tag_name: ${{ inputs.tag || github.ref_name }}
-          files: dist/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: |
+          set -eu
+          cd dist && cat *.sha256 | sort -k2 > SHA256SUMS && rm ./*.sha256 && cat SHA256SUMS
+      - name: create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+          # An explicit asset list: a compromised matrix leg cannot smuggle
+          # extra files into a published release.
+          cd dist
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            gh release upload "$GITHUB_REF_NAME" "$BIN-$t.tar.gz" --clobber
+          done
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber

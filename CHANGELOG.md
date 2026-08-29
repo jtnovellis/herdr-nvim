@@ -4,7 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-29
+
+The first published release: per-tab Neovim sidebars backed by headless
+daemons, code annotations you can send to any agent in the workspace,
+auto-reload of files agents edit, a fuzzy picker over the files an agent
+touched, `edit file:line` from any pane, and Ctrl-clickable paths.
+
+Sections below record how the plugin got here; there is no earlier release to
+compare against.
 
 ### Added
 
@@ -35,12 +43,29 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which is what "new Lua, old binary" looks like after an update that did not
   re-run the build step.
 - Prebuilt release binaries for macOS (arm64, x86_64) and Linux (x86_64,
-  aarch64). `herdr plugin install` now downloads one instead of requiring a
-  Rust toolchain, falling back to `cargo build --release` when there is no
-  matching asset.
+  aarch64, statically linked against musl so they run on any distribution).
+  `herdr plugin install` now downloads one instead of requiring a Rust
+  toolchain, falling back to `cargo build --release --locked` when there is no
+  matching asset. `HERDR_NVIM_NO_DOWNLOAD=1` forces the source build.
+- **The install verifies what it downloads.** `scripts/build.sh` checks the
+  asset's SHA-256 against the `SHA256SUMS` published with the same release,
+  pins transport to https across redirects, extracts exactly the one expected
+  member without restoring its ownership or permission bits, and **aborts on a
+  mismatch** instead of quietly falling back to a source build. Release assets
+  carry Sigstore build provenance, verifiable with `gh attestation verify`.
+- [SECURITY.md](SECURITY.md) — the trust model, a disclosure process, and what
+  the daemon socket and agent-scraped paths do and do not guarantee.
 - `:help herdr-nvim` — a full vimdoc reference (`doc/herdr-nvim.txt`).
 - CI on every push: formatting, clippy, the Rust tests, and the headless
-  Neovim suite against Neovim 0.11 and stable, plus an MSRV build.
+  Neovim suite against Neovim 0.11 and stable, plus an MSRV build, a
+  `cargo deny` pass over advisories/licenses/sources, a musl build of the
+  release target, and behavioural tests for `scripts/build.sh`'s refusal
+  paths. Every action is pinned by commit SHA, every workflow declares a
+  least-privilege `permissions` block, and Dependabot keeps both the crates
+  and those pins current.
+- The release workflow attests build provenance, re-verifies every artifact's
+  checksum before publishing, uploads an explicit asset list rather than a
+  glob, and can be dry-run from `workflow_dispatch` without cutting a release.
 - `make test` runs everything CI does; `make lua T=<name>` runs one Neovim
   check. `CONTRIBUTING.md` documents the workflow and `e2e.sh`'s side effects.
 - `:checkhealth herdr-nvim` now detects the two most common first-run
@@ -102,13 +127,6 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   plugin action indefinitely.
 - `tests/fixtures/agent_output_claude.txt`, which no test referenced, and a
   `.gitignore` entry for a `config.env` no code reads.
-
-## [0.1.0] - 2026-08-28
-
-Initial release: per-tab Neovim sidebars backed by headless daemons, code
-annotations you can send to any agent in the workspace, auto-reload of files
-agents edit, a fuzzy picker over the files an agent touched, `edit file:line`
-from any pane, and Ctrl-clickable paths.
 
 [Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.1.0
