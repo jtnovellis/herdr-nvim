@@ -119,7 +119,7 @@ function M.check()
     local conf = vim.uv.fs_stat(cfg) and table.concat(vim.fn.readfile(cfg), "\n") or nil
     if not conf then
       health.info(
-        "no Herdr config.toml found; run `herdr plugin action invoke herdr-nvim setup-keys` "
+        "no Herdr config.toml found; run `herdr plugin action invoke setup-keys --plugin herdr-nvim` "
           .. "to bind a key to the sidebar"
       )
     elseif conf:find("herdr%-nvim%.toggle") then
@@ -128,7 +128,7 @@ function M.check()
       health.warn(
         "no key is bound to herdr-nvim.toggle in "
           .. cfg
-          .. "; run `herdr plugin action invoke herdr-nvim setup-keys` to bind "
+          .. "; run `herdr plugin action invoke setup-keys --plugin herdr-nvim` to bind "
           .. "prefix+e and prefix+f (it backs the file up and skips keys you already use)"
       )
     end

@@ -25,6 +25,21 @@ local function hn()
   return require("herdr-nvim")
 end
 
+--- One spelling per file.
+---
+--- The agent records the path it used; the buffer reports whatever Neovim
+--- opened. On macOS those differ for anything under a symlinked root -- `/tmp`
+--- is `/private/tmp`, `/var` is `/private/var` -- and comparing the two as
+--- strings silently finds nothing. The picker already collapses these
+--- (`merge_duplicates` in pick.rs); so does this.
+local function canonical(path)
+  if not path or path == "" then
+    return nil
+  end
+  local uv = vim.uv or vim.loop
+  return uv.fs_realpath(path) or path
+end
+
 local function emit()
   pcall(vim.api.nvim_exec_autocmds, "User", {
     pattern = "HerdrNvimReviewChanged",
@@ -115,8 +130,8 @@ end
 
 --- Place every hunk recorded for the file in `buf` that is not placed yet.
 function R.attach(buf)
-  local file = vim.api.nvim_buf_get_name(buf)
-  local queued = file ~= "" and pending[file]
+  local file = canonical(vim.api.nvim_buf_get_name(buf))
+  local queued = file and pending[file]
   if not queued or #queued == 0 then
     return 0
   end
@@ -176,19 +191,20 @@ function R.record(edits, agent)
   end
   local touched = {}
   for _, edit in ipairs(edits) do
-    if type(edit) == "table" and type(edit.path) == "string" and edit.path ~= "" then
-      pending[edit.path] = pending[edit.path] or {}
-      table.insert(pending[edit.path], {
+    local path = type(edit) == "table" and canonical(edit.path)
+    if path then
+      pending[path] = pending[path] or {}
+      table.insert(pending[path], {
         old = edit.old,
         new = edit.new,
         agent = agent,
       })
-      touched[edit.path] = true
+      touched[path] = true
     end
   end
   -- Place immediately into any buffer already showing one of these files.
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(buf) and touched[vim.api.nvim_buf_get_name(buf)] then
+    if vim.api.nvim_buf_is_loaded(buf) and touched[canonical(vim.api.nvim_buf_get_name(buf))] then
       R.attach(buf)
     end
   end
@@ -315,8 +331,8 @@ function R.clear(buf)
   if not buf then
     pending = {}
   else
-    local file = vim.api.nvim_buf_get_name(buf)
-    if file ~= "" then
+    local file = canonical(vim.api.nvim_buf_get_name(buf))
+    if file then
       pending[file] = nil
     end
   end

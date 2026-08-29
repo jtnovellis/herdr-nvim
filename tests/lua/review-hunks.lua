@@ -56,4 +56,26 @@ check(#written == 1, "a write was not marked")
 local ok3, err3 = R.revert(written[1])
 check(not ok3 and tostring(err3):find("created", 1, true) ~= nil, "write revert: " .. tostring(err3))
 
+-- The agent records the path it used, which need not be the spelling Neovim
+-- opened the buffer under: on macOS `/tmp` is `/private/tmp` and `/var` is
+-- `/private/var`, so comparing the two as strings finds nothing. Reproduced
+-- here with an explicit symlink so it fails on any platform.
+R.clear()
+local uv = vim.uv or vim.loop
+local real = tmp("aliased.txt")
+local f = assert(io.open(real, "w"))
+f:write("one\ntwo\nthree\n")
+f:close()
+local link = tmp("alias-dir")
+uv.fs_symlink(TMP, link)
+if uv.fs_stat(link) then
+  -- Open through the symlink, record the edit against the real path.
+  vim.cmd("edit " .. vim.fn.fnameescape(link .. "/aliased.txt"))
+  local abuf = vim.api.nvim_get_current_buf()
+  check(vim.api.nvim_buf_get_name(abuf) ~= real, "the two spellings coincided; the test proves nothing")
+  R.record({ { path = real, old = "two", new = "two" } }, "claude")
+  check(#R.list(abuf) == 1, "an edit recorded under the other spelling was lost")
+  R.clear()
+end
+
 pass("review hunks")

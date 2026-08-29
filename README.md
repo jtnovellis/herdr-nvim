@@ -82,7 +82,7 @@ Bind the keys. A plugin manifest cannot declare keybindings — those live in
 your own `config.toml` — so run this once:
 
 ```sh
-herdr plugin action invoke herdr-nvim setup-keys
+herdr plugin action invoke setup-keys --plugin herdr-nvim
 ```
 
 It adds `prefix+e` (toggle) and `prefix+f` (file picker), backs the file up
