@@ -5,7 +5,14 @@ check(type(json) == "string" and json:find("ok"), "encode failed on invalid utf-
 
 vim.cmd("silent checkhealth herdr-nvim")
 local lines = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
-check(lines:find("binary:"), "health missing binary line")
+
+-- With no binary anywhere -- a fresh CI checkout has no target/ at all --
+-- health correctly reports that instead of naming one.
+if have_binary() then
+  check(lines:find("binary:"), "health missing binary line:\n" .. lines)
+else
+  check(lines:find("binary not found"), "health did not report the missing binary:\n" .. lines)
+end
 
 -- `:checkhealth` legitimately reports ERROR when the release binary has not
 -- been built or the `herdr` CLI is not installed. Only assert a clean report

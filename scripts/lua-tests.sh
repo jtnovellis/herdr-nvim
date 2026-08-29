@@ -33,7 +33,14 @@ _G.edit = function(name)
   vim.cmd("edit " .. vim.fn.fnameescape(_G.tmp(name)))
 end
 _G.have_binary = function()
-  return vim.fn.executable(vim.env.HERDR_NVIM_TEST_ROOT .. "/target/release/herdr-nvim") == 1
+  -- Ask the resolver rather than guessing: it also falls back to
+  -- target/debug and $PATH, so a path check disagrees with what the plugin
+  -- (and :checkhealth) actually sees.
+  local ok, bridge = pcall(require, "herdr-nvim.bridge")
+  if not ok then
+    return false
+  end
+  return bridge.resolve(require("herdr-nvim").config) ~= nil
 end
 _G.have_herdr = function()
   return vim.fn.executable("herdr") == 1
