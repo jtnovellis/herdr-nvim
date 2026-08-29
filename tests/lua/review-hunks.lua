@@ -58,24 +58,21 @@ check(not ok3 and tostring(err3):find("created", 1, true) ~= nil, "write revert:
 
 -- The agent records the path it used, which need not be the spelling Neovim
 -- opened the buffer under: on macOS `/tmp` is `/private/tmp` and `/var` is
--- `/private/var`, so comparing the two as strings finds nothing. Reproduced
--- here with an explicit symlink so it fails on any platform.
+-- `/private/var`, so comparing the two as strings finds nothing. A redundant
+-- `/./` segment reproduces that mismatch on every platform -- a symlink does
+-- not, because Neovim resolves one at open time on Linux but not on macOS.
 R.clear()
-local uv = vim.uv or vim.loop
 local real = tmp("aliased.txt")
 local f = assert(io.open(real, "w"))
 f:write("one\ntwo\nthree\n")
 f:close()
-local link = tmp("alias-dir")
-uv.fs_symlink(TMP, link)
-if uv.fs_stat(link) then
-  -- Open through the symlink, record the edit against the real path.
-  vim.cmd("edit " .. vim.fn.fnameescape(link .. "/aliased.txt"))
-  local abuf = vim.api.nvim_get_current_buf()
-  check(vim.api.nvim_buf_get_name(abuf) ~= real, "the two spellings coincided; the test proves nothing")
-  R.record({ { path = real, old = "two", new = "two" } }, "claude")
-  check(#R.list(abuf) == 1, "an edit recorded under the other spelling was lost")
-  R.clear()
-end
+local aliased = TMP .. "/./aliased.txt"
+check(aliased ~= real, "the two spellings coincided; the test proves nothing")
+
+vim.cmd("edit " .. vim.fn.fnameescape(real))
+local abuf = vim.api.nvim_get_current_buf()
+R.record({ { path = aliased, old = "two", new = "two" } }, "claude")
+check(#R.list(abuf) == 1, "an edit recorded under the other spelling was lost")
+R.clear()
 
 pass("review hunks")
