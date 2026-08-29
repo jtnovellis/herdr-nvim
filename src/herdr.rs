@@ -172,86 +172,35 @@ impl Herdr {
     }
 
     /// Run a CLI command and return its `result` (or the parsed output).
-    pub fn cli(&self, args: &[&str]) -> Result<Value> {
-        let output = Command::new(&self.bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .env("HERDR_SOCKET_PATH", &self.socket)
-            .output()
-            .with_context(|| format!("failed to run {}", self.bin.display()))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if output.status.success() {
-            let text = stdout.trim();
-            if text.is_empty() {
-                return Ok(Value::Null);
-            }
-            return match serde_json::from_str::<Value>(text) {
-                Ok(value) => {
-                    if let Some(err) = value.get("error") {
-                        return Err(herdr_error(err));
-                    }
-                    Ok(value.get("result").cloned().unwrap_or(value))
-                }
-                Err(_) => Ok(Value::String(text.to_string())),
-            };
-        }
-
-        for text in [stderr.trim(), stdout.trim()] {
-            if let Ok(value) = serde_json::from_str::<Value>(text) {
-                if let Some(err) = value.get("error") {
-                    return Err(herdr_error(err));
-                }
-            }
-        }
-        let detail = stderr
-            .trim()
-            .lines()
-            .last()
-            .filter(|l| !l.is_empty())
-            .or_else(|| stdout.trim().lines().last())
-            .unwrap_or("no output");
-        bail!(
-            "`herdr {}` failed (exit {}): {}",
-            args.join(" "),
-            output
-                .status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into()),
-            detail
-        )
+    /// Scrollback text from a pane. `source` uses the socket spelling
+    /// (`recent_unwrapped`), not the CLI's hyphenated form.
+    pub fn pane_read(&self, pane_id: &str, source: &str, lines: u32) -> Result<String> {
+        let result = self.rpc(
+            "pane.read",
+            json!({
+                "pane_id": pane_id,
+                "source": source,
+                "lines": lines,
+                "format": "text",
+            }),
+        )?;
+        Ok(result
+            .pointer("/read/text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
     }
 
     /// Run a CLI command whose stdout is plain text (e.g. `pane read`).
-    pub fn cli_text(&self, args: &[&str]) -> Result<String> {
-        let output = Command::new(&self.bin)
-            .args(args)
-            .stdin(Stdio::null())
-            .env("HERDR_SOCKET_PATH", &self.socket)
-            .output()
-            .with_context(|| format!("failed to run {}", self.bin.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if let Ok(value) = serde_json::from_str::<Value>(stderr.trim()) {
-                if let Some(err) = value.get("error") {
-                    return Err(herdr_error(err));
-                }
-            }
-            bail!("`herdr {}` failed: {}", args.join(" "), stderr.trim());
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
     /// Send one raw request over the session socket and return its `result`.
     pub fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         let mut stream = UnixStream::connect(&self.socket)
             .with_context(|| format!("cannot connect to Herdr socket {}", self.socket.display()))?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let id = format!("herdr-nvim:{method}");
         let request = json!({
-            "id": format!("herdr-nvim:{method}"),
+            "id": &id,
             "method": method,
             "params": params,
         });
@@ -267,6 +216,13 @@ impl Herdr {
         }
         let value: Value = serde_json::from_str(line.trim())
             .with_context(|| format!("invalid JSON response for {method}"))?;
+        // Reject a frame that is not the reply to this request rather than
+        // mistaking an unsolicited event for our result.
+        if let Some(got) = value.get("id").and_then(Value::as_str) {
+            if got != id {
+                bail!("Herdr replied to `{got}` while waiting for `{id}`");
+            }
+        }
         if let Some(err) = value.get("error") {
             return Err(herdr_error(err));
         }
@@ -278,7 +234,7 @@ impl Herdr {
     /// `Ok(None)` only when Herdr says the pane does not exist; transport or
     /// server failures propagate so callers never mistake them for "gone".
     pub fn pane_get(&self, pane_id: &str) -> Result<Option<PaneInfo>> {
-        match self.cli(&["pane", "get", pane_id]) {
+        match self.rpc("pane.get", json!({ "pane_id": pane_id })) {
             Ok(result) => {
                 let pane = result
                     .get("pane")
@@ -295,7 +251,7 @@ impl Herdr {
 
     /// argv of every foreground process in the pane.
     pub fn pane_process_argv(&self, pane_id: &str) -> Result<Vec<Vec<String>>> {
-        let result = self.cli(&["pane", "process-info", "--pane", pane_id])?;
+        let result = self.rpc("pane.process_info", json!({ "pane_id": pane_id }))?;
         let info = result.get("process_info").unwrap_or(&result);
         Ok(info
             .get("foreground_processes")
@@ -327,18 +283,15 @@ impl Herdr {
     }
 
     pub fn pane_close(&self, pane_id: &str) -> Result<()> {
-        self.cli(&["pane", "close", pane_id]).map(|_| ())
+        self.rpc("pane.close", json!({ "pane_id": pane_id }))
+            .map(|_| ())
     }
 
     pub fn pane_swap(&self, source: &str, target: &str) -> Result<()> {
-        let result = self.cli(&[
-            "pane",
-            "swap",
-            "--source-pane",
-            source,
-            "--target-pane",
-            target,
-        ])?;
+        let result = self.rpc(
+            "pane.swap",
+            json!({ "source_pane_id": source, "target_pane_id": target }),
+        )?;
         let swap = result.get("swap").unwrap_or(&result);
         if swap.get("changed").and_then(Value::as_bool) == Some(false) {
             bail!(
@@ -352,13 +305,13 @@ impl Herdr {
     }
 
     pub fn pane_zoom_off(&self, pane_id: &str) -> Result<()> {
-        self.cli(&["pane", "zoom", "--off", "--pane", pane_id])
+        self.rpc("pane.zoom", json!({ "pane_id": pane_id, "mode": "off" }))
             .map(|_| ())
     }
 
     /// First pane id of a tab (from `pane list`).
     pub fn any_pane_in_tab(&self, tab_id: &str) -> Result<Option<String>> {
-        let result = self.cli(&["pane", "list"])?;
+        let result = self.rpc("pane.list", json!({}))?;
         Ok(result
             .get("panes")
             .and_then(Value::as_array)
@@ -373,7 +326,7 @@ impl Herdr {
 
     /// Layout of the tab containing `pane_id`.
     pub fn tab_layout(&self, pane_id: &str) -> Result<TabLayout> {
-        let result = self.cli(&["pane", "layout", "--pane", pane_id])?;
+        let result = self.rpc("pane.layout", json!({ "pane_id": pane_id }))?;
         let layout = result
             .get("layout")
             .ok_or_else(|| anyhow!("unexpected `pane layout` response"))?;
@@ -388,23 +341,14 @@ impl Herdr {
 
     pub fn pane_set_title(&self, pane_id: &str, source: &str, title: Option<&str>) -> Result<()> {
         match title.map(str::trim).filter(|t| !t.is_empty()) {
-            Some(title) => self.cli(&[
-                "pane",
-                "report-metadata",
-                pane_id,
-                "--source",
-                source,
-                "--title",
-                title,
-            ]),
-            None => self.cli(&[
-                "pane",
-                "report-metadata",
-                pane_id,
-                "--source",
-                source,
-                "--clear-title",
-            ]),
+            Some(title) => self.rpc(
+                "pane.report_metadata",
+                json!({ "pane_id": pane_id, "source": source, "title": title }),
+            ),
+            None => self.rpc(
+                "pane.report_metadata",
+                json!({ "pane_id": pane_id, "source": source, "clear_title": true }),
+            ),
         }
         .map(|_| ())
     }
@@ -438,34 +382,25 @@ impl Herdr {
         env: &[(String, String)],
         focus: bool,
     ) -> Result<PaneInfo> {
-        let mut args: Vec<String> = vec![
-            "plugin".into(),
-            "pane".into(),
-            "open".into(),
-            "--plugin".into(),
-            plugin_id.into(),
-            "--entrypoint".into(),
-            entrypoint.into(),
-            "--placement".into(),
-            "split".into(),
-            "--direction".into(),
-            "right".into(),
-        ];
+        let env_map: serde_json::Map<String, Value> = env
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        let mut params = json!({
+            "plugin_id": plugin_id,
+            "entrypoint": entrypoint,
+            "placement": "split",
+            "direction": "right",
+            "env": env_map,
+            "focus": focus,
+        });
         if let Some(target) = target_pane {
-            args.push("--target-pane".into());
-            args.push(target.into());
+            params["target_pane_id"] = json!(target);
         }
         if let Some(cwd) = cwd {
-            args.push("--cwd".into());
-            args.push(cwd.into());
+            params["cwd"] = json!(cwd);
         }
-        for (key, value) in env {
-            args.push("--env".into());
-            args.push(format!("{key}={value}"));
-        }
-        args.push(if focus { "--focus" } else { "--no-focus" }.into());
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let result = self.cli(&refs)?;
+        let result = self.rpc("plugin.pane.open", params)?;
         let pane = result
             .pointer("/plugin_pane/pane")
             .cloned()
@@ -474,22 +409,18 @@ impl Herdr {
     }
 
     pub fn plugin_pane_focus(&self, pane_id: &str) -> Result<()> {
-        self.cli(&["plugin", "pane", "focus", pane_id]).map(|_| ())
+        self.rpc("plugin.pane.focus", json!({ "pane_id": pane_id }))
+            .map(|_| ())
     }
 
     // ----- layout ---------------------------------------------------------
 
     /// Create an unfocused tab; returns `(tab_id, root_pane_id)`.
     pub fn tab_create(&self, workspace_id: &str, label: &str) -> Result<(String, String)> {
-        let result = self.cli(&[
-            "tab",
-            "create",
-            "--workspace",
-            workspace_id,
-            "--label",
-            label,
-            "--no-focus",
-        ])?;
+        let result = self.rpc(
+            "tab.create",
+            json!({ "workspace_id": workspace_id, "label": label, "focus": false }),
+        )?;
         let tab = result
             .pointer("/tab/tab_id")
             .and_then(Value::as_str)
@@ -511,26 +442,21 @@ impl Herdr {
         target: Option<&str>,
         ratio: Option<f64>,
     ) -> Result<()> {
-        let ratio_text = ratio.map(|r| format!("{r:.4}"));
-        let mut args: Vec<&str> = vec![
-            "pane",
-            "move",
-            pane_id,
-            "--tab",
-            tab_id,
-            "--split",
-            dir.as_cli_arg(),
-        ];
+        let mut destination = json!({
+            "type": "tab",
+            "tab_id": tab_id,
+            "split": dir.as_cli_arg(),
+        });
         if let Some(target) = target {
-            args.push("--target-pane");
-            args.push(target);
+            destination["target_pane_id"] = json!(target);
         }
-        if let Some(text) = ratio_text.as_deref() {
-            args.push("--ratio");
-            args.push(text);
+        if let Some(ratio) = ratio {
+            destination["ratio"] = json!(ratio);
         }
-        args.push("--no-focus");
-        let result = self.cli(&args)?;
+        let result = self.rpc(
+            "pane.move",
+            json!({ "pane_id": pane_id, "destination": destination, "focus": false }),
+        )?;
         let mv = result.get("move_result").unwrap_or(&result);
         if mv.get("changed").and_then(Value::as_bool) == Some(false) {
             bail!(
@@ -549,7 +475,8 @@ impl Herdr {
     }
 
     pub fn tab_close(&self, tab_id: &str) -> Result<()> {
-        self.cli(&["tab", "close", tab_id]).map(|_| ())
+        self.rpc("tab.close", json!({ "tab_id": tab_id }))
+            .map(|_| ())
     }
 
     pub fn layout_export(&self, pane_id: &str) -> Result<Value> {
@@ -571,7 +498,7 @@ impl Herdr {
     // ----- tabs / workspaces / sessions ------------------------------------
 
     pub fn tab_ids(&self) -> Result<Vec<String>> {
-        let result = self.cli(&["tab", "list"])?;
+        let result = self.rpc("tab.list", json!({}))?;
         Ok(result
             .get("tabs")
             .and_then(Value::as_array)
@@ -586,7 +513,7 @@ impl Herdr {
 
     /// `workspace_id -> label` for every workspace in the session.
     pub fn workspace_labels(&self) -> Result<Vec<(String, String)>> {
-        let result = self.cli(&["workspace", "list"])?;
+        let result = self.rpc("workspace.list", json!({}))?;
         Ok(result
             .get("workspaces")
             .and_then(Value::as_array)
@@ -607,7 +534,9 @@ impl Herdr {
     }
 
     pub fn workspace_cwd(&self, workspace_id: &str) -> Option<String> {
-        let result = self.cli(&["workspace", "get", workspace_id]).ok()?;
+        let result = self
+            .rpc("workspace.get", json!({ "workspace_id": workspace_id }))
+            .ok()?;
         result
             .pointer("/workspace/cwd")
             .or_else(|| result.pointer("/workspace/worktree/checkout_path"))
@@ -633,7 +562,7 @@ impl Herdr {
     // ----- agents ---------------------------------------------------------
 
     pub fn agents(&self) -> Result<Vec<AgentInfo>> {
-        let result = self.cli(&["agent", "list"])?;
+        let result = self.rpc("agent.list", json!({}))?;
         let agents = result
             .get("agents")
             .cloned()
@@ -642,7 +571,7 @@ impl Herdr {
     }
 
     pub fn agent_get(&self, target: &str) -> Result<Option<AgentInfo>> {
-        match self.cli(&["agent", "get", target]) {
+        match self.rpc("agent.get", json!({ "target": target })) {
             Ok(result) => {
                 let agent = result
                     .get("agent")
@@ -658,11 +587,12 @@ impl Herdr {
     }
 
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<Value> {
-        self.cli(&["agent", "prompt", target, text])
+        self.rpc("agent.prompt", json!({ "target": target, "text": text }))
     }
 
     pub fn agent_focus(&self, target: &str) -> Result<()> {
-        self.cli(&["agent", "focus", target]).map(|_| ())
+        self.rpc("agent.focus", json!({ "target": target }))
+            .map(|_| ())
     }
 
     // ----- notifications --------------------------------------------------
@@ -671,7 +601,7 @@ impl Herdr {
     pub fn notify(&self, title: &str, body: &str) {
         let title: String = title.chars().take(80).collect();
         let body: String = body.chars().take(240).collect();
-        let _ = self.cli(&["notification", "show", &title, "--body", &body]);
+        let _ = self.rpc("notification.show", json!({ "title": title, "body": body }));
     }
 }
 

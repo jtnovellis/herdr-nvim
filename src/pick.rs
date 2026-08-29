@@ -15,7 +15,7 @@ use crate::sidebar::Host;
 use crate::state::state_dir;
 use anyhow::{bail, Context as _, Result};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
@@ -115,13 +115,33 @@ fn gather(agent: &str, session_log: &str, scrape_text: &str, cwd: &Path) -> Vec<
     let exists_str = |p: &str| Path::new(p).is_file();
     let mined = sessions::mine_session(agent, session_log);
     let toplevel = gitscan::toplevel(cwd);
-    let git_dirty = toplevel
-        .as_deref()
-        .and_then(|top| gitscan::dirty_paths(top).ok())
-        .unwrap_or_default();
-    let git_committed = match (&toplevel, mined.first_op_unix) {
-        (Some(top), Some(since)) => gitscan::committed_since(top, since).unwrap_or_default(),
-        _ => HashSet::new(),
+    // The four remaining git queries are independent read-only scans, and each
+    // costs a process launch (~12-15 ms here), so run them at once: the picker
+    // then waits for the slowest rather than the sum of all four.
+    let (git_dirty, git_committed, diff_stats, repo_files) = match toplevel.as_deref() {
+        None => (
+            HashSet::new(),
+            HashSet::new(),
+            HashMap::new(),
+            Vec::<String>::new(),
+        ),
+        Some(top) => std::thread::scope(|scope| {
+            let dirty = scope.spawn(|| gitscan::dirty_paths(top).unwrap_or_default());
+            let committed = scope.spawn(|| match mined.first_op_unix {
+                Some(since) => gitscan::committed_since(top, since).unwrap_or_default(),
+                None => HashSet::new(),
+            });
+            let diffs = scope.spawn(|| gitscan::diff_numstat_by_path(top).unwrap_or_default());
+            let files = scope.spawn(|| gitscan::list_repo_files(top).unwrap_or_default());
+            // A panicked scan degrades to "nothing found", matching what the
+            // serial version did with `unwrap_or_default` on an Err.
+            (
+                dirty.join().unwrap_or_default(),
+                committed.join().unwrap_or_default(),
+                diffs.join().unwrap_or_default(),
+                files.join().unwrap_or_default(),
+            )
+        }),
     };
     let in_git_worktree = |path: &str| {
         toplevel
@@ -136,14 +156,6 @@ fn gather(agent: &str, session_log: &str, scrape_text: &str, cwd: &Path) -> Vec<
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
     };
-    let diff_stats = toplevel
-        .as_deref()
-        .and_then(|top| gitscan::diff_numstat_by_path(top).ok())
-        .unwrap_or_default();
-    let repo_files = toplevel
-        .as_deref()
-        .and_then(|top| gitscan::list_repo_files(top).ok())
-        .unwrap_or_default();
     let scraped = extract::extract(scrape_text, cwd, &exists);
 
     let out = candidates::build_candidates(BuildInput {
@@ -197,7 +209,11 @@ fn merge_duplicates(list: Vec<Candidate>) -> Vec<Candidate> {
         }
     }
     // Re-establish newest-first after merging (stable: ties keep source order).
-    out.sort_by_key(|c| std::cmp::Reverse(c.touched_unix));
+    out.sort_by(|a, b| {
+        b.touched_unix
+            .cmp(&a.touched_unix)
+            .then_with(|| a.path.cmp(&b.path))
+    });
     out
 }
 
@@ -219,6 +235,9 @@ fn write_handoff(handoff: &Value) -> Result<PathBuf> {
 }
 
 fn wait_for_ui(cfg: &Config, socket: &Path) -> bool {
+    // Each probe is a socket round trip (~0.1 ms), so poll tightly: this
+    // interval is pure added latency before the picker appears. It used to
+    // spawn a whole Neovim per iteration, which is why it was 100 ms.
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(n) = daemon::remote_expr(cfg, socket, "len(nvim_list_uis())") {
@@ -226,7 +245,7 @@ fn wait_for_ui(cfg: &Config, socket: &Path) -> bool {
                 return true;
             }
         }
-        sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(5));
     }
     false
 }
@@ -286,17 +305,7 @@ fn pick_inner(opts: &PickArgs) -> Result<Value> {
     let lines = effective_scan_lines(host.cfg.picker_scan_lines, info.scroll);
     let scrape = host
         .herdr
-        .cli_text(&[
-            "pane",
-            "read",
-            &target.pane_id,
-            "--source",
-            "recent-unwrapped",
-            "--lines",
-            &lines.to_string(),
-            "--format",
-            "text",
-        ])
+        .pane_read(&target.pane_id, "recent_unwrapped", lines)
         .unwrap_or_default();
     let (agent_kind, log) = session_text(&info, &cwd);
     let list = gather(&agent_kind, &log, &scrape, &cwd);
@@ -349,6 +358,100 @@ fn pick_inner(opts: &PickArgs) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// A small repo with a commit, one dirty file and one untracked file.
+    fn fixture_repo(name: &str) -> Option<PathBuf> {
+        let dir =
+            std::env::temp_dir().join(format!("herdr-nvim-pick-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("src")).ok()?;
+        if !git(&dir, &["init", "-q"]) {
+            return None; // no git available: the caller skips
+        }
+        for i in 1..=4 {
+            fs::write(dir.join("src").join(format!("f{i}.rs")), "fn main() {}\n").ok()?;
+        }
+        fs::write(dir.join("README.md"), "hi\n").ok()?;
+        git(&dir, &["add", "-A"]);
+        git(
+            &dir,
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        );
+        fs::write(dir.join("src/f1.rs"), "fn main() { dirty() }\n").ok()?;
+        fs::write(dir.join("src/untracked.rs"), "new\n").ok()?;
+        Some(dir)
+    }
+
+    #[test]
+    fn gather_lists_repo_files_and_marks_dirty_ones() {
+        let Some(dir) = fixture_repo("gather") else {
+            return;
+        };
+        let out = gather("claude", "", "", &dir);
+        let paths: Vec<&str> = out.iter().map(|c| c.path.as_str()).collect();
+        let has = |suffix: &str| paths.iter().any(|p| p.ends_with(suffix));
+
+        assert!(has("src/f1.rs"), "dirty tracked file missing: {paths:?}");
+        assert!(has("src/f4.rs"), "clean tracked file missing: {paths:?}");
+        assert!(has("README.md"), "root file missing: {paths:?}");
+        assert!(has("src/untracked.rs"), "untracked file missing: {paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.contains("/.git/")),
+            "walked into .git: {paths:?}"
+        );
+
+        // Every candidate must exist on disk and be inside the repo.
+        for c in &out {
+            assert!(Path::new(&c.path).is_file(), "phantom entry {}", c.path);
+        }
+
+        // The four scans now run on threads; the result must not depend on
+        // which finishes first.
+        let again = gather("claude", "", "", &dir);
+        assert_eq!(
+            out.iter().map(|c| &c.path).collect::<Vec<_>>(),
+            again.iter().map(|c| &c.path).collect::<Vec<_>>(),
+            "gather is not deterministic across runs"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gather_outside_a_repo_still_returns_scraped_paths() {
+        let dir = std::env::temp_dir().join(format!("herdr-nvim-nogit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("noted.txt"), "x\n").unwrap();
+        // No `git init`: every git scan returns empty and must not panic.
+        let out = gather("claude", "", "see ./noted.txt for details", &dir);
+        assert!(
+            out.iter().any(|c| c.path.ends_with("noted.txt")),
+            "scrape layer lost outside a repo: {:?}",
+            out.iter().map(|c| &c.path).collect::<Vec<_>>()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn scan_lines_clamp_to_cheap_reads() {

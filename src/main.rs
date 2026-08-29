@@ -17,6 +17,7 @@ mod git;
 mod gitscan;
 mod herdr;
 mod layout;
+mod msgpack;
 mod pick;
 mod send;
 mod sessions;

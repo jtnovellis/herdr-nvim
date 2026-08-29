@@ -25,6 +25,7 @@ pub struct Config {
     pub save_on_close: bool,
     pub picker_scan_lines: u32,
     pub picker_max_files: u32,
+    pub lock_timeout_ms: u64,
 }
 
 impl Default for Config {
@@ -39,6 +40,7 @@ impl Default for Config {
             save_on_close: true,
             picker_scan_lines: 300,
             picker_max_files: 20,
+            lock_timeout_ms: 3000,
         }
     }
 }
@@ -92,6 +94,11 @@ impl Config {
         }
         if let Some(n) = get("HERDR_NVIM_PICKER_MAX_FILES").and_then(|v| v.parse::<u32>().ok()) {
             cfg.picker_max_files = n.clamp(1, 200);
+        }
+        if let Some(ms) = get("HERDR_NVIM_LOCK_TIMEOUT_MS") {
+            if let Ok(ms) = ms.parse::<u64>() {
+                cfg.lock_timeout_ms = ms.clamp(100, 60_000);
+            }
         }
         if let Some(flag) = get("HERDR_NVIM_SAVE_ON_CLOSE") {
             cfg.save_on_close = !matches!(
@@ -215,6 +222,32 @@ mod tests {
         assert_eq!(cfg.grace_ms, 100);
         assert_eq!(cfg.daemon_args, vec!["-u", "none"]);
         assert!(!cfg.save_on_close);
+    }
+
+    #[test]
+    fn lock_timeout_comes_from_the_config_file_and_is_clamped() {
+        // Regression: HERDR_NVIM_LOCK_TIMEOUT_MS is documented as a config.env
+        // knob, but was only ever read from the process environment -- which
+        // Herdr does not forward through `plugin action invoke`, so setting it
+        // in config.env did nothing.
+        let mut values = HashMap::new();
+        values.insert("HERDR_NVIM_LOCK_TIMEOUT_MS".to_string(), "500".to_string());
+        assert_eq!(Config::from_values(&values).lock_timeout_ms, 500);
+
+        values.insert("HERDR_NVIM_LOCK_TIMEOUT_MS".to_string(), "5".to_string());
+        assert_eq!(Config::from_values(&values).lock_timeout_ms, 100);
+
+        values.insert(
+            "HERDR_NVIM_LOCK_TIMEOUT_MS".to_string(),
+            "999999".to_string(),
+        );
+        assert_eq!(Config::from_values(&values).lock_timeout_ms, 60_000);
+
+        values.insert("HERDR_NVIM_LOCK_TIMEOUT_MS".to_string(), "nope".to_string());
+        assert_eq!(
+            Config::from_values(&values).lock_timeout_ms,
+            Config::default().lock_timeout_ms
+        );
     }
 
     #[test]

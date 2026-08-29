@@ -79,6 +79,15 @@ pub(crate) const CLAUDE_DIALECT: Dialect = Dialect {
 pub(crate) fn parse_session(text: &str, dialect: &Dialect) -> Vec<RawEvent> {
     let mut out = Vec::new();
     for line in text.lines() {
+        // A line can only yield an event if it carries a content item of the
+        // dialect's type, so the item type must appear literally somewhere in
+        // it. Checking for the substring first skips the full serde_json::Value
+        // allocation for the ~2/3 of records that are plain conversation --
+        // measured on real Claude logs, where 31% of lines contain "tool_use".
+        // (Sound because JSON writers do not escape plain ASCII in strings.)
+        if !line.contains(dialect.content_item_type) {
+            continue;
+        }
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };

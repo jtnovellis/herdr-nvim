@@ -185,7 +185,16 @@ pub(crate) fn build_candidates(input: BuildInput) -> Vec<Candidate> {
     // derived Ord puts `None` first ascending, so `b.cmp(&a)` -- descending
     // -- puts it last), and the sort is stable so entries that tie (e.g.
     // multiple `None`s) keep their original relative source order.
-    out.sort_by_key(|c| std::cmp::Reverse(c.touched_unix));
+    // Newest first, then by path. The tiebreaker matters: `git_dirty` and
+    // `git_committed_in_session` are HashSets, so without it two files with
+    // the same timestamp -- or none at all, which is every plain repo file --
+    // came out in a different order on every invocation, and the picker
+    // reshuffled itself each time it opened.
+    out.sort_by(|a, b| {
+        b.touched_unix
+            .cmp(&a.touched_unix)
+            .then_with(|| a.path.cmp(&b.path))
+    });
 
     out
 }

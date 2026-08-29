@@ -1,6 +1,7 @@
 //! Daemon registry: one JSON file under the plugin state directory, guarded
 //! by an advisory lock so concurrent plugin commands do not clobber each other.
 
+use crate::config::Config;
 use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -9,6 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -134,11 +136,20 @@ pub struct StateFile {
 }
 
 fn lock_timeout() -> Duration {
-    env::var("HERDR_NVIM_LOCK_TIMEOUT_MS")
+    // The environment is re-read on every call so a one-off run (or a test)
+    // can override it mid-process. Otherwise fall back to config.env, which is
+    // the only place the knob is documented -- and which used to be ignored
+    // here, because Config::load() parses the file into a map without
+    // exporting it, and Herdr does not forward the user's environment through
+    // `plugin action invoke`. Resolved once: this is on the state-lock path.
+    if let Some(ms) = env::var("HERDR_NVIM_LOCK_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(Duration::from_secs(3))
+    {
+        return Duration::from_millis(ms.clamp(100, 60_000));
+    }
+    static FROM_FILE: OnceLock<u64> = OnceLock::new();
+    Duration::from_millis(*FROM_FILE.get_or_init(|| Config::load().lock_timeout_ms))
 }
 
 impl StateFile {
@@ -254,6 +265,8 @@ pub fn print_status() -> Result<i32> {
         serde_json::Value::String(state_dir().join("daemons.json").to_string_lossy().into()),
     );
     let mut sessions = serde_json::Map::new();
+    // One `ps` covering every record, rather than one fork per daemon.
+    let ps = crate::daemon::ps_snapshot(state.sessions.values().flat_map(|tabs| tabs.values()));
     for (session, tabs) in &state.sessions {
         let mut entries = serde_json::Map::new();
         for (tab, record) in tabs {
@@ -261,7 +274,10 @@ pub fn print_status() -> Result<i32> {
             if let Some(obj) = value.as_object_mut() {
                 obj.insert(
                     "running".into(),
-                    serde_json::Value::Bool(crate::daemon::is_running(record)),
+                    serde_json::Value::Bool(crate::daemon::is_running_with(
+                        record,
+                        ps.get(&record.pid).map(String::as_str),
+                    )),
                 );
             }
             entries.insert(tab.clone(), value);
