@@ -24,7 +24,10 @@ Neovim integration for [Herdr](https://herdr.dev).
   annotations stay attached.
 
 The Herdr side is a single Rust binary that serves every manifest entrypoint;
-the Neovim side is a small Lua plugin that shells out to that binary.
+the Neovim side is a small Lua plugin that shells out to that binary. Both
+ship in this repository, so `herdr plugin install jtnovellis/herdr-nvim` is
+the whole installation — the sidebar daemon loads the bundled Lua when your
+own Neovim config does not already provide it.
 
 Full reference: `:help herdr-nvim` (or [doc/herdr-nvim.txt](doc/herdr-nvim.txt)).
 
@@ -93,9 +96,21 @@ herdr plugin action invoke pick-file --plugin herdr-nvim # file picker
 herdr plugin action invoke gc     --plugin herdr-nvim   # stop orphaned daemons
 ```
 
-### 2. The Neovim plugin
+### 2. The Neovim plugin (optional)
 
-The same repository is the Neovim plugin. With lazy.nvim:
+**You can stop after step 1.** The same repository is the Neovim plugin, and
+the sidebar daemon loads the copy that came with the Herdr plugin when your
+Neovim config does not already provide one — so `herdr plugin install` alone
+gives you the sidebar, `:HerdrAsk`, annotations, the file picker and the
+reload watcher.
+
+Install it in your own config when you want the commands in a Neovim you
+start yourself (outside a sidebar), or when you want to pin a different
+version. Your install always wins: the daemon only falls back to the bundled
+copy when `require("herdr-nvim")` fails after your config has loaded, so the
+two can never both end up on the runtimepath.
+
+With lazy.nvim:
 
 ```lua
 {

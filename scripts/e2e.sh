@@ -72,6 +72,11 @@ hs pane process-info --pane "$PANE" | grep -q -- '--remote-ui' || fail "sidebar 
 HERDR_NVIM_STATE_DIR="$STATE_DIR" "$BIN" status | grep -q '"running": true' || fail "status does not report running"
 DSOCK=$(state_get "$TAB" socket | tr -d '"')
 echo "pane=$PANE pid=$PID socket=$DSOCK"
+# The daemon must have the Lua half, whether the user installed it themselves
+# or the spawn fell back to the copy shipped with the Herdr plugin. Without it
+# there is no :HerdrAsk and `pick-file` fails after gathering its candidates.
+nvim --server "$DSOCK" --remote-expr "exists(':HerdrAsk')" | grep -qx 2 || fail "daemon has no :HerdrAsk (Lua half not loaded)"
+nvim --server "$DSOCK" --remote-expr "luaeval(\"tostring((pcall(require, 'herdr-nvim.picker')))\")" | grep -qx true || fail "daemon cannot load the picker module"
 
 step "toggle hides the sidebar, daemon survives"
 hs plugin action invoke toggle --plugin herdr-nvim >/dev/null

@@ -249,6 +249,32 @@ fn log_path(session_key: &str, tab_id: &str) -> PathBuf {
     ))
 }
 
+/// The plugin checkout that contains this binary: `<root>/target/<profile>/herdr-nvim`.
+/// `None` when the binary was moved somewhere without that shape, in which
+/// case the daemon simply gets no bundled Lua.
+pub fn plugin_root_of(exe: &Path) -> Option<PathBuf> {
+    let root = exe.parent()?.parent()?.parent()?;
+    root.join("lua")
+        .join("herdr-nvim")
+        .join("init.lua")
+        .is_file()
+        .then(|| root.to_path_buf())
+}
+
+/// Load the Lua half we ship with, but only if the user has not installed it
+/// themselves. Runs after their config, so a lazy.nvim (or any other) install
+/// always wins and there is never a second copy on the runtimepath. This is
+/// what makes `herdr plugin install` alone enough: without it the daemon has
+/// no :HerdrAsk, no annotations, and `pick-file` fails after gathering.
+const BUNDLED_LUA_BOOTSTRAP: &str = "lua \
+    if not pcall(require, 'herdr-nvim') then \
+      local root = vim.env.HERDR_NVIM_PLUGIN_ROOT \
+      if root and root ~= '' then \
+        vim.opt.rtp:append(root) \
+        pcall(vim.cmd, 'runtime plugin/herdr-nvim.lua') \
+      end \
+    end";
+
 fn spawn(
     cfg: &Config,
     session_key: &str,
@@ -306,6 +332,12 @@ fn spawn(
         cmd.env("HERDR_NVIM_CONFIG_DIR", dir);
     }
     if let Ok(exe) = env::current_exe() {
+        // Passed by environment rather than interpolated into the -c string:
+        // a path needs no Lua escaping and cannot break the command line.
+        if let Some(root) = plugin_root_of(&exe) {
+            cmd.env("HERDR_NVIM_PLUGIN_ROOT", root);
+            cmd.arg("-c").arg(BUNDLED_LUA_BOOTSTRAP);
+        }
         cmd.env("HERDR_NVIM_BIN", exe);
     }
     // SAFETY: setsid is async-signal-safe and has no preconditions here.
@@ -1089,6 +1121,33 @@ mod tests {
         };
         assert!(rec.age_secs() >= STARTING_STALE_SECS);
         assert!(!is_running(&rec));
+    }
+
+    #[test]
+    fn plugin_root_is_found_from_the_binary_and_refused_elsewhere() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for profile in ["release", "debug"] {
+            let exe = root.join("target").join(profile).join("herdr-nvim");
+            assert_eq!(plugin_root_of(&exe).as_deref(), Some(root), "{profile}");
+        }
+        // A binary copied onto $PATH has no checkout above it, so the daemon
+        // gets no bundled Lua rather than a wrong runtimepath entry.
+        assert!(plugin_root_of(Path::new("/usr/local/bin/herdr-nvim")).is_none());
+        assert!(plugin_root_of(Path::new("/herdr-nvim")).is_none());
+        assert!(plugin_root_of(Path::new("herdr-nvim")).is_none());
+    }
+
+    #[test]
+    fn bundled_lua_bootstrap_is_one_guarded_line() {
+        // The literal relies on `\` line continuations; a stray newline would
+        // make nvim treat the tail as a second -c command.
+        assert!(!BUNDLED_LUA_BOOTSTRAP.contains('\n'));
+        assert!(BUNDLED_LUA_BOOTSTRAP.starts_with("lua "));
+        // The guard is the whole point: a user's own install must win.
+        assert!(BUNDLED_LUA_BOOTSTRAP.contains("if not pcall(require, 'herdr-nvim') then"));
+        assert!(BUNDLED_LUA_BOOTSTRAP.contains("HERDR_NVIM_PLUGIN_ROOT"));
+        // No `|`, which vim would read as a command separator.
+        assert!(!BUNDLED_LUA_BOOTSTRAP.contains('|'));
     }
 
     #[test]

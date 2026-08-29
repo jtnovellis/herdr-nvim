@@ -21,6 +21,16 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `HerdrNvimAskRange`. The reply appears in the agent's own Herdr pane —
   `agent.prompt` answers with lifecycle state, never text, so there is nothing
   to stream back into Neovim.
+- **`herdr plugin install` is now the whole installation.** The Herdr plugin
+  always shipped the Lua half in `lua/`, but the sidebar daemon spawned a bare
+  `nvim` that never had it on the runtimepath, so a user who installed only
+  through Herdr got a sidebar with no `:HerdrAsk`, no annotations, no reload
+  watcher — and a `pick-file` that gathered its candidates and then failed on
+  the `luaeval` call into the daemon. The daemon now falls back to the bundled
+  copy, guarded by a `pcall(require, "herdr-nvim")` that runs *after* the
+  user's config so an install of their own always wins and the two never both
+  land on the runtimepath. Installing the Neovim plugin separately is now
+  optional (see |herdr-nvim-bundled-lua|).
 - `:checkhealth herdr-nvim` reports when the Rust binary predates `:HerdrAsk`,
   which is what "new Lua, old binary" looks like after an update that did not
   re-run the build step.

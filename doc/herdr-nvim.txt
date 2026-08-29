@@ -70,8 +70,16 @@ the automatic call, then call `setup()` when you are ready.
 Repeated `setup()` calls merge into the current configuration rather than
 resetting it, so options set by an earlier call survive a later one.
 
-The Herdr side is installed separately; see the README for the manifest,
-keybindings and `herdr plugin install`.
+                                                        *herdr-nvim-bundled-lua*
+`herdr plugin install jtnovellis/herdr-nvim` is the whole installation: the
+Herdr plugin ships this Lua plugin too, and a sidebar daemon loads that copy
+when your own Neovim config does not already provide one. The check runs after
+your config, so an install of your own always wins and the two never both end
+up on the |runtimepath|.
+
+Install it in your own config as well when you want the commands in a Neovim
+you start yourself, outside a sidebar. See the README for the manifest and
+keybindings.
 
 ==============================================================================
 4. COMMANDS                                               *herdr-nvim-commands*
