@@ -162,6 +162,12 @@ jobs:
         run: |
           set -eu
           cd dist && cat *.sha256 | sort -k2 > SHA256SUMS && rm ./*.sha256 && cat SHA256SUMS
+          # The commit these binaries were built from. `plugin install` checks
+          # out the default branch, which can be ahead of the last tag -- and a
+          # download keyed only on the manifest version would then pair that
+          # newer checkout with an older binary. build.sh compares this and
+          # builds from source instead when they disagree.
+          printf '%s\n' "$GITHUB_SHA" > COMMIT && cat COMMIT
       - name: create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -178,3 +184,4 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$BIN-$t.tar.gz" --clobber
           done
           gh release upload "$GITHUB_REF_NAME" SHA256SUMS --clobber
+          gh release upload "$GITHUB_REF_NAME" COMMIT --clobber

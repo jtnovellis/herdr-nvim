@@ -49,6 +49,8 @@ stub_curl() { # path
 for a in "$@"; do case "$prev" in -o) dest=$a;; esac; prev=$a; done
 case "$prev" in
   *SHA256SUMS) cp "$REL/SHA256SUMS" "$dest" ;;
+  # A release older than v0.2.1 has no COMMIT: 404, like the real thing.
+  *COMMIT)     [ -f "$REL/COMMIT" ] || exit 22; cp "$REL/COMMIT" "$dest" ;;
   *)           cp "$REL/asset.tar.gz" "$dest" ;;
 esac
 SH
@@ -126,6 +128,37 @@ REL="$d/rel" HOME=/nonexistent PATH="$d/bin:/usr/bin:/bin" \
 sed 's/^/    /' "$d/out"
 [ -x "$d/root/target/release/herdr-nvim" ] || fail "the binary was not installed"
 ! grep -q 'stub cargo' "$d/out" || fail "unexpectedly built from source"
+ok
+
+echo "== a release built from another commit is not installed over this checkout"
+# `plugin install` checks out the default branch, which can be ahead of the
+# tag. Downloading by manifest version alone would pair this newer source with
+# an older binary; the COMMIT file is how the release says which one it is.
+d="$WORK/7"; mkdir -p "$d/rel"; stub_bin "$d/bin"; stub_curl "$d/bin/curl"; fake_root "$d/root"
+printf '#!/bin/sh\necho 0.0.0-stub\n' > "$d/rel/herdr-nvim"; chmod +x "$d/rel/herdr-nvim"
+tar -czf "$d/rel/asset.tar.gz" -C "$d/rel" herdr-nvim
+printf '%s  herdr-nvim-%s.tar.gz\n' "$(sha256_of "$d/rel/asset.tar.gz")" "$TRIPLE" > "$d/rel/SHA256SUMS"
+printf '%s\n' '0000000000000000000000000000000000000000' > "$d/rel/COMMIT"
+( cd "$d/root" && git init -q && git -c user.email=t@x -c user.name=t commit -q --allow-empty -m x )
+REL="$d/rel" HOME=/nonexistent PATH="$d/bin:/usr/bin:/bin" \
+  sh "$d/root/scripts/build.sh" > "$d/out" 2>&1 || true
+sed 's/^/    /' "$d/out"
+grep -q 'not the commit' "$d/out" || fail "the commit mismatch was not detected"
+grep -q 'building from source instead' "$d/out" || fail "it did not fall back to source"
+ok
+
+echo "== a release built from THIS commit still installs"
+d="$WORK/8"; mkdir -p "$d/rel"; stub_bin "$d/bin"; stub_curl "$d/bin/curl"; fake_root "$d/root"
+printf '#!/bin/sh\necho 0.0.0-stub\n' > "$d/rel/herdr-nvim"; chmod +x "$d/rel/herdr-nvim"
+tar -czf "$d/rel/asset.tar.gz" -C "$d/rel" herdr-nvim
+printf '%s  herdr-nvim-%s.tar.gz\n' "$(sha256_of "$d/rel/asset.tar.gz")" "$TRIPLE" > "$d/rel/SHA256SUMS"
+( cd "$d/root" && git init -q && git -c user.email=t@x -c user.name=t commit -q --allow-empty -m x )
+( cd "$d/root" && git rev-parse HEAD ) > "$d/rel/COMMIT"
+REL="$d/rel" HOME=/nonexistent PATH="$d/bin:/usr/bin:/bin" \
+  sh "$d/root/scripts/build.sh" > "$d/out" 2>&1
+sed 's/^/    /' "$d/out"
+[ -x "$d/root/target/release/herdr-nvim" ] || fail "the matching binary was not installed"
+! grep -q 'stub cargo' "$d/out" || fail "a matching commit still built from source"
 ok
 
 echo

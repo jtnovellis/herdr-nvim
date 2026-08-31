@@ -122,6 +122,25 @@ url="$base_url/v$version/$asset"
 download "$url" "$tmp/$asset" || fallback "download of $url failed"
 download "$base_url/v$version/SHA256SUMS" "$tmp/SHA256SUMS" || fallback "download of SHA256SUMS failed"
 
+# `plugin install` checks out the default branch, which can be ahead of the
+# last tag -- and the asset is chosen by the manifest version alone. Installing
+# then pairs a newer checkout with an older binary, which looks like features
+# silently missing. When the release says which commit it was built from, and
+# this checkout is a different one, build the source that is actually here.
+# A release without COMMIT (anything before v0.2.1) keeps the old behaviour.
+if download "$base_url/v$version/COMMIT" "$tmp/COMMIT" 2>/dev/null &&
+   have git && git -C "$root" rev-parse HEAD >/dev/null 2>&1; then
+  # Hex-only rather than `tr -d`, which is locale-sensitive: a non-UTF-8
+  # LC_ALL makes it fail on bytes it should just be deleting.
+  # `s///p` prints only when it substituted something, and a clean hex line
+  # has nothing to strip -- so print unconditionally after stripping.
+  built_from=$(LC_ALL=C sed -n '1{s/[^0-9a-fA-F]//g;p;}' "$tmp/COMMIT")
+  head_is=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "")
+  if [ -n "$built_from" ] && [ -n "$head_is" ] && [ "$built_from" != "$head_is" ]; then
+    fallback "this checkout ($(echo "$head_is" | cut -c1-8)) is not the commit v$version was built from ($(echo "$built_from" | cut -c1-8))"
+  fi
+fi
+
 expected=$(grep -E "^[0-9a-f]{64} [ *]$asset\$" "$tmp/SHA256SUMS" | head -n1 | awk '{print $1}')
 [ -n "$expected" ] || fallback "no checksum for $asset in SHA256SUMS"
 actual=$(sha256_of "$tmp/$asset") || fallback "no sha256 tool available"

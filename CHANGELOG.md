@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-31
+
+### Fixed
+
+- **The first thing you asked an agent never got a reply view.** Claude writes
+  its transcript when it receives its first message, and the resolver required
+  the file to exist — so the marker came back empty for exactly the message
+  whose answer we wanted, and `ask` quietly fell back to "read it in the
+  agent's pane". The marker may now name a transcript that does not exist yet,
+  and the watch retries for five seconds while it appears. Found by doing the
+  round trip for real against a freshly started agent; every earlier test used
+  one that had already been talked to.
+- **`herdr plugin install` could pair new source with an old binary.** It
+  checks out the default branch, which can be ahead of the last tag, while the
+  binary is chosen by the manifest version alone. Releases now publish the
+  commit they were built from, and `scripts/build.sh` builds from source
+  instead when this checkout is a different one. A release without that file
+  (v0.1.0, v0.2.0) keeps the old behaviour.
+- `scripts/e2e.sh` could strand your real `config.env`. It kept the backup in
+  the temp directory its own EXIT trap deletes and restored it inline, so an
+  interrupt left `HERDR_NVIM_SIDE=left` in your config with the only copy gone.
+  The backup now sits beside the original and the restore runs from the trap,
+  which also catches INT and TERM.
+
+### Added
+
+- e2e covers what 0.2.0 added: `tail` reading forward from an offset,
+  `setup-keys` against an isolated config, Herdr actually delivering
+  `pane.agent_status_changed` into the sidebar's Neovim, and an agent edit
+  being marked and reverted. 21 steps.
+
 ## [0.2.0] - 2026-08-31
 
 ### Added
@@ -203,6 +234,7 @@ compare against.
 - `tests/fixtures/agent_output_claude.txt`, which no test referenced, and a
   `.gitignore` entry for a `config.env` no code reads.
 
-[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.1.0
