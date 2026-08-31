@@ -38,6 +38,22 @@ check(Reply.debug().turns == 1, "a reply from another pane was shown")
 Reply.close()
 check(not Reply.debug().open, "reply view did not close")
 
+-- The order ask.lua uses: start following, then show the window. Opening the
+-- window must not retire the tail it was opened for -- it did, and the float
+-- appeared and then never filled.
+local transcript = tmp("follow.jsonl")
+local fh = assert(io.open(transcript, "w"))
+fh:write("{}\n")
+fh:close()
+check(Agent.follow("wF:pC", { path = transcript, offset = 0, agent = "claude" }), "follow refused")
+check(Agent.debug().following == "wF:pC", "follow did not take")
+check(Reply.open({ agent = "claude", pane_id = "wF:pC" }), "reply view did not open")
+check(Agent.debug().following == "wF:pC", "opening the reply view cancelled the follow")
+
+-- Dismissing it, though, really does stop reading: nobody is looking.
+Reply.close()
+check(Agent.debug().following == nil, "closing the reply view left the tail running")
+
 -- End to end through the real binary: append to a transcript and check that
 -- what comes back is the prose and the edit, not the tool-call noise.
 if have_binary() then

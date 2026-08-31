@@ -30,15 +30,24 @@ function Reply.is_open()
   return state.win ~= nil and vim.api.nvim_win_is_valid(state.win)
 end
 
-function Reply.close()
+--- Close the reply window. `opts.keep_follow` leaves the transcript tail
+--- alone, for the caller that is about to start a new one.
+---
+--- Dismissing the window really does mean stop reading: nobody is looking.
+--- But `Reply.open` also passes through here to replace an old window, and
+--- unfollowing there would cancel the follow its caller had just started --
+--- the window would open and then never fill.
+function Reply.close(opts)
   pcall(vim.api.nvim_del_augroup_by_name, GROUP)
   if Reply.is_open() then
     pcall(vim.api.nvim_win_close, state.win, true)
   end
   state = {}
-  pcall(function()
-    require("herdr-nvim.agent").unfollow()
-  end)
+  if not (opts or {}).keep_follow then
+    pcall(function()
+      require("herdr-nvim.agent").unfollow()
+    end)
+  end
 end
 
 local function footer()
@@ -86,7 +95,8 @@ function Reply.open(opts)
   if uis == 0 then
     return false
   end
-  Reply.close()
+  -- `Agent.follow` already retires any previous tail, so this must not.
+  Reply.close({ keep_follow = true })
   state = {
     pane_id = opts.pane_id,
     agent = opts.agent,
@@ -117,7 +127,9 @@ function Reply.open(opts)
   vim.wo[state.win].linebreak = true
 
   for _, lhs in ipairs({ "q", "<Esc>" }) do
-    vim.keymap.set("n", lhs, Reply.close, { buffer = state.buf, nowait = true, silent = true })
+    vim.keymap.set("n", lhs, function()
+      Reply.close()
+    end, { buffer = state.buf, nowait = true, silent = true })
   end
 
   local group = vim.api.nvim_create_augroup(GROUP, { clear = true })
