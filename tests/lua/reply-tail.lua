@@ -54,6 +54,34 @@ check(Agent.debug().following == "wF:pC", "opening the reply view cancelled the 
 Reply.close()
 check(Agent.debug().following == nil, "closing the reply view left the tail running")
 
+-- An answer is usually one long paragraph. Sizing the window by buffer lines
+-- gives it three rows showing the middle of a sentence, so it is sized by how
+-- many rows the text actually occupies once wrapped.
+Reply.close()
+check(Reply.open({ agent = "claude", pane_id = "wF:pW" }), "reply view did not open")
+local long = string.rep("a long sentence about the transcript offset. ", 12)
+vim.api.nvim_exec_autocmds("User", {
+  pattern = "HerdrNvimAgentReply",
+  modeline = false,
+  data = { pane_id = "wF:pW", reply = { long }, edits = {} },
+})
+vim.wait(300, function()
+  return Reply.debug().turns > 0
+end, 10)
+local win
+for _, w in ipairs(vim.api.nvim_list_wins()) do
+  if vim.api.nvim_win_get_config(w).relative ~= "" then
+    win = w
+  end
+end
+check(win ~= nil, "no float found")
+local height = vim.api.nvim_win_get_height(win)
+check(height > 3, "a one-line paragraph got a minimum-height window: " .. height)
+-- The first word of the newest turn must be on screen, not scrolled past.
+local top = vim.fn.line("w0", win)
+check(top == 1, "the answer starts above the visible area (top line " .. top .. ")")
+Reply.close()
+
 -- End to end through the real binary: append to a transcript and check that
 -- what comes back is the prose and the edit, not the tool-call noise.
 if have_binary() then

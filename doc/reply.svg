@@ -1,0 +1,436 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="838" height="1176" viewBox="0 0 838 1176" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13">
+<rect width="838" height="1176" rx="8" fill="#1e1e2e"/>
+<circle cx="16" cy="14" r="5" fill="#f38ba8"/>
+<circle cx="32" cy="14" r="5" fill="#f9e2af"/>
+<circle cx="48" cy="14" r="5" fill="#a6e3a1"/>
+<text x="419" y="19" fill="#6c7086" text-anchor="middle" font-size="12">the agent&#x27;s answer, in Neovim</text>
+<text x="16.0" y="57.0" fill="#b4befe" xml:space="preserve">    1   </text>
+<rect x="83.2" y="44.0" width="487.2" height="18.0" fill="#2a2b3c"/>
+<text x="83.2" y="57.0" fill="#9399b2" xml:space="preserve">//! Read an agent&#x27;s transcript forward from a byte offset.</text>
+<rect x="570.4" y="44.0" width="8.4" height="18.0" fill="#2a2b3c"/>
+<rect x="578.8" y="44.0" width="243.6" height="18.0" fill="#2a2b3c"/>
+<text x="578.8" y="57.0" fill="#45475a" xml:space="preserve"> You, 2 days ago - Read the a</text>
+<text x="16.0" y="75.0" fill="#45475a" xml:space="preserve">    1   </text>
+<text x="83.2" y="75.0" fill="#9399b2" xml:space="preserve">//!</text>
+<text x="16.0" y="93.0" fill="#45475a" xml:space="preserve">    2   </text>
+<text x="83.2" y="93.0" fill="#9399b2" xml:space="preserve">//! `agent.prompt` answers with lifecycle state and never text, so the reply</text>
+<text x="16.0" y="111.0" fill="#45475a" xml:space="preserve">    3   </text>
+<text x="83.2" y="111.0" fill="#9399b2" xml:space="preserve">//! to a message cannot come back through the call that sent it. It can be</text>
+<text x="16.0" y="129.0" fill="#45475a" xml:space="preserve">    4   </text>
+<text x="83.2" y="129.0" fill="#9399b2" xml:space="preserve">//! read, though: Herdr reports the transcript behind every agent pane, and</text>
+<text x="16.0" y="147.0" fill="#45475a" xml:space="preserve">    5   </text>
+<text x="83.2" y="147.0" fill="#9399b2" xml:space="preserve">//! that file is append-only JSONL. `ask` records the file&#x27;s length at the</text>
+<text x="16.0" y="165.0" fill="#45475a" xml:space="preserve">    6   </text>
+<text x="83.2" y="165.0" fill="#9399b2" xml:space="preserve">//! moment it sends; everything appended past that offset is the answer to</text>
+<text x="16.0" y="183.0" fill="#45475a" xml:space="preserve">    7   </text>
+<text x="83.2" y="183.0" fill="#9399b2" xml:space="preserve">//! that message, so tailing from it needs no diffing and no guesswork about</text>
+<text x="16.0" y="201.0" fill="#45475a" xml:space="preserve">    8   </text>
+<text x="83.2" y="201.0" fill="#9399b2" xml:space="preserve">//! where one turn ends and the next begins.</text>
+<text x="16.0" y="219.0" fill="#45475a" xml:space="preserve">    9   </text>
+<text x="16.0" y="237.0" fill="#45475a" xml:space="preserve">   10   </text>
+<text x="83.2" y="237.0" fill="#cba6f7" xml:space="preserve">use</text>
+<text x="116.8" y="237.0" fill="#f9e2af" xml:space="preserve">crate</text>
+<text x="158.8" y="237.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="175.6" y="237.0" fill="#cdd6f4" xml:space="preserve">sessions</text>
+<text x="242.8" y="237.0" fill="#9399b2" xml:space="preserve">;</text>
+<text x="16.0" y="255.0" fill="#45475a" xml:space="preserve">   11   </text>
+<text x="83.2" y="255.0" fill="#cba6f7" xml:space="preserve">use</text>
+<text x="116.8" y="255.0" fill="#f9e2af" xml:space="preserve">anyhow</text>
+<text x="167.2" y="255.0" fill="#9399b2" xml:space="preserve">::{</text>
+<text x="192.4" y="255.0" fill="#cdd6f4" xml:space="preserve">bail</text>
+<text x="226.0" y="255.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="242.8" y="255.0" fill="#f9e2af" xml:space="preserve">Context</text>
+<text x="301.6" y="255.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="318.4" y="255.0" fill="#f9e2af" xml:space="preserve">Result</text>
+<text x="368.8" y="255.0" fill="#9399b2" xml:space="preserve">};</text>
+<text x="16.0" y="273.0" fill="#45475a" xml:space="preserve">   12   </text>
+<text x="83.2" y="273.0" fill="#cba6f7" xml:space="preserve">use</text>
+<text x="116.8" y="273.0" fill="#f9e2af" xml:space="preserve">serde_json</text>
+<text x="200.8" y="273.0" fill="#9399b2" xml:space="preserve">::{</text>
+<text x="226.0" y="273.0" fill="#cdd6f4" xml:space="preserve">json</text>
+<text x="259.6" y="273.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="276.4" y="273.0" fill="#f9e2af" xml:space="preserve">Value</text>
+<text x="318.4" y="273.0" fill="#9399b2" xml:space="preserve">};</text>
+<text x="16.0" y="291.0" fill="#45475a" xml:space="preserve">   13   </text>
+<text x="83.2" y="291.0" fill="#cba6f7" xml:space="preserve">use</text>
+<text x="116.8" y="291.0" fill="#f9e2af" xml:space="preserve">std</text>
+<text x="142.0" y="291.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="158.8" y="291.0" fill="#f9e2af" xml:space="preserve">io</text>
+<text x="175.6" y="291.0" fill="#9399b2" xml:space="preserve">::{</text>
+<text x="200.8" y="291.0" fill="#f9e2af" xml:space="preserve">Read</text>
+<text x="234.4" y="291.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="251.2" y="291.0" fill="#f9e2af" xml:space="preserve">Seek</text>
+<text x="284.8" y="291.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="301.6" y="291.0" fill="#f9e2af" xml:space="preserve">SeekFrom</text>
+<text x="368.8" y="291.0" fill="#9399b2" xml:space="preserve">};</text>
+<text x="16.0" y="309.0" fill="#45475a" xml:space="preserve">   14   </text>
+<text x="83.2" y="309.0" fill="#cba6f7" xml:space="preserve">use</text>
+<text x="116.8" y="309.0" fill="#f9e2af" xml:space="preserve">std</text>
+<text x="142.0" y="309.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="158.8" y="309.0" fill="#f9e2af" xml:space="preserve">path</text>
+<text x="192.4" y="309.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="209.2" y="309.0" fill="#f9e2af" xml:space="preserve">PathBuf</text>
+<text x="268.0" y="309.0" fill="#9399b2" xml:space="preserve">;</text>
+<text x="16.0" y="327.0" fill="#45475a" xml:space="preserve">   15   </text>
+<text x="16.0" y="345.0" fill="#45475a" xml:space="preserve">   16   </text>
+<text x="83.2" y="345.0" fill="#f5c2e7" xml:space="preserve">#</text>
+<text x="91.6" y="345.0" fill="#9399b2" xml:space="preserve">[</text>
+<text x="100.0" y="345.0" fill="#f5c2e7" xml:space="preserve">derive</text>
+<text x="150.4" y="345.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="158.8" y="345.0" fill="#f9e2af" xml:space="preserve">Debug</text>
+<text x="200.8" y="345.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="217.6" y="345.0" fill="#f9e2af" xml:space="preserve">Default</text>
+<text x="276.4" y="345.0" fill="#9399b2" xml:space="preserve">)]</text>
+<text x="16.0" y="363.0" fill="#45475a" xml:space="preserve">   17   </text>
+<text x="83.2" y="363.0" fill="#cba6f7" xml:space="preserve">struct</text>
+<text x="142.0" y="363.0" fill="#f9e2af" xml:space="preserve">TailArgs</text>
+<text x="217.6" y="363.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="381.0" fill="#45475a" xml:space="preserve">   18   </text>
+<text x="83.2" y="381.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="381.0" fill="#b4befe" xml:space="preserve">path</text>
+<text x="150.4" y="381.0" fill="#9399b2" xml:space="preserve">:</text>
+<text x="167.2" y="381.0" fill="#f9e2af" xml:space="preserve">Option</text>
+<text x="217.6" y="381.0" fill="#9399b2" xml:space="preserve">&lt;</text>
+<text x="226.0" y="381.0" fill="#f9e2af" xml:space="preserve">PathBuf</text>
+<text x="284.8" y="381.0" fill="#9399b2" xml:space="preserve">&gt;,</text>
+<text x="16.0" y="399.0" fill="#45475a" xml:space="preserve">   19   </text>
+<text x="83.2" y="399.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="399.0" fill="#b4befe" xml:space="preserve">agent</text>
+<text x="158.8" y="399.0" fill="#9399b2" xml:space="preserve">:</text>
+<text x="175.6" y="399.0" fill="#f9e2af" xml:space="preserve">String</text>
+<text x="226.0" y="399.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="16.0" y="417.0" fill="#45475a" xml:space="preserve">   20   </text>
+<text x="83.2" y="417.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="417.0" fill="#b4befe" xml:space="preserve">from</text>
+<text x="150.4" y="417.0" fill="#9399b2" xml:space="preserve">:</text>
+<text x="167.2" y="417.0" fill="#cba6f7" xml:space="preserve">u64</text>
+<text x="192.4" y="417.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="16.0" y="435.0" fill="#45475a" xml:space="preserve">   21   </text>
+<text x="83.2" y="435.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="453.0" fill="#45475a" xml:space="preserve">   22   </text>
+<text x="16.0" y="471.0" fill="#45475a" xml:space="preserve">   23   </text>
+<text x="83.2" y="471.0" fill="#cba6f7" xml:space="preserve">fn</text>
+<text x="108.4" y="471.0" fill="#89b4fa" xml:space="preserve">parse_tail_args</text>
+<text x="234.4" y="471.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="242.8" y="471.0" fill="#eba0ac" xml:space="preserve">args</text>
+<text x="276.4" y="471.0" fill="#9399b2" xml:space="preserve">:</text>
+<text x="293.2" y="471.0" fill="#89dceb" xml:space="preserve">&amp;</text>
+<text x="301.6" y="471.0" fill="#9399b2" xml:space="preserve">[</text>
+<text x="310.0" y="471.0" fill="#f9e2af" xml:space="preserve">String</text>
+<text x="360.4" y="471.0" fill="#9399b2" xml:space="preserve">])</text>
+<text x="385.6" y="471.0" fill="#9399b2" xml:space="preserve">-&gt;</text>
+<text x="410.8" y="471.0" fill="#f9e2af" xml:space="preserve">Result</text>
+<text x="461.2" y="471.0" fill="#9399b2" xml:space="preserve">&lt;</text>
+<text x="469.6" y="471.0" fill="#f9e2af" xml:space="preserve">TailArgs</text>
+<text x="536.8" y="471.0" fill="#9399b2" xml:space="preserve">&gt;</text>
+<text x="553.6" y="471.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="489.0" fill="#45475a" xml:space="preserve">   24   </text>
+<text x="83.2" y="489.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="489.0" fill="#cba6f7" xml:space="preserve">let</text>
+<text x="150.4" y="489.0" fill="#cba6f7" xml:space="preserve">mut</text>
+<text x="175.6" y="489.0" fill="#cdd6f4" xml:space="preserve"> out </text>
+<text x="217.6" y="489.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="234.4" y="489.0" fill="#f9e2af" xml:space="preserve">TailArgs</text>
+<text x="301.6" y="489.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="318.4" y="489.0" fill="#89b4fa" xml:space="preserve">default</text>
+<text x="377.2" y="489.0" fill="#9399b2" xml:space="preserve">();</text>
+<text x="16.0" y="507.0" fill="#45475a" xml:space="preserve">   25   </text>
+<text x="83.2" y="507.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="507.0" fill="#cba6f7" xml:space="preserve">let</text>
+<text x="150.4" y="507.0" fill="#cba6f7" xml:space="preserve">mut</text>
+<text x="175.6" y="507.0" fill="#cdd6f4" xml:space="preserve"> iter </text>
+<text x="226.0" y="507.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="234.4" y="507.0" fill="#cdd6f4" xml:space="preserve"> args</text>
+<text x="276.4" y="507.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="284.8" y="507.0" fill="#89b4fa" xml:space="preserve">iter</text>
+<text x="318.4" y="507.0" fill="#9399b2" xml:space="preserve">();</text>
+<text x="16.0" y="525.0" fill="#45475a" xml:space="preserve">   26   </text>
+<text x="83.2" y="525.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="525.0" fill="#cba6f7" xml:space="preserve">while</text>
+<text x="167.2" y="525.0" fill="#cba6f7" xml:space="preserve">let</text>
+<text x="200.8" y="525.0" fill="#fab387" xml:space="preserve">Some</text>
+<text x="234.4" y="525.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="242.8" y="525.0" fill="#cdd6f4" xml:space="preserve">arg</text>
+<text x="268.0" y="525.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="284.8" y="525.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="293.2" y="525.0" fill="#cdd6f4" xml:space="preserve"> iter</text>
+<text x="335.2" y="525.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="343.6" y="525.0" fill="#89b4fa" xml:space="preserve">next</text>
+<text x="377.2" y="525.0" fill="#9399b2" xml:space="preserve">()</text>
+<text x="402.4" y="525.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="543.0" fill="#45475a" xml:space="preserve">   27   </text>
+<text x="83.2" y="543.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="543.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="543.0" fill="#cba6f7" xml:space="preserve">match</text>
+<text x="192.4" y="543.0" fill="#cdd6f4" xml:space="preserve"> arg</text>
+<text x="226.0" y="543.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="234.4" y="543.0" fill="#89b4fa" xml:space="preserve">as_str</text>
+<text x="284.8" y="543.0" fill="#9399b2" xml:space="preserve">()</text>
+<text x="310.0" y="543.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="561.0" fill="#45475a" xml:space="preserve">   28   </text>
+<text x="83.2" y="561.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="561.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="561.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="561.0" fill="#a6e3a1" xml:space="preserve">&quot;--path&quot;</text>
+<text x="259.6" y="561.0" fill="#9399b2" xml:space="preserve">=&gt;</text>
+<text x="284.8" y="561.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="579.0" fill="#45475a" xml:space="preserve">   29   </text>
+<text x="83.2" y="579.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="579.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="579.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="579.0" fill="#313244" xml:space="preserve">│</text>
+<text x="192.4" y="579.0" fill="#cdd6f4" xml:space="preserve">   out</text>
+<text x="242.8" y="579.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="251.2" y="579.0" fill="#b4befe" xml:space="preserve">path</text>
+<text x="293.2" y="579.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="310.0" y="579.0" fill="#fab387" xml:space="preserve">Some</text>
+<text x="343.6" y="579.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="352.0" y="579.0" fill="#f9e2af" xml:space="preserve">PathBuf</text>
+<text x="410.8" y="579.0" fill="#9399b2" xml:space="preserve">::</text>
+<text x="427.6" y="579.0" fill="#89b4fa" xml:space="preserve">from</text>
+<text x="461.2" y="579.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="16.0" y="597.0" fill="#45475a" xml:space="preserve">   30   </text>
+<text x="83.2" y="597.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="597.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="597.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="597.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="597.0" fill="#313244" xml:space="preserve">│</text>
+<text x="226.0" y="597.0" fill="#cdd6f4" xml:space="preserve">   iter</text>
+<text x="284.8" y="597.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="293.2" y="597.0" fill="#89b4fa" xml:space="preserve">next</text>
+<text x="326.8" y="597.0" fill="#9399b2" xml:space="preserve">().</text>
+<text x="352.0" y="597.0" fill="#89b4fa" xml:space="preserve">context</text>
+<text x="410.8" y="597.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="419.2" y="597.0" fill="#a6e3a1" xml:space="preserve">&quot;--path needs a transcript path&quot;</text>
+<text x="688.0" y="597.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="696.4" y="597.0" fill="#89dceb" xml:space="preserve">?</text>
+<text x="704.8" y="597.0" fill="#9399b2" xml:space="preserve">,</text>
+<text x="16.0" y="615.0" fill="#45475a" xml:space="preserve">   31   </text>
+<text x="83.2" y="615.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="615.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="615.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="615.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="615.0" fill="#9399b2" xml:space="preserve">))</text>
+<text x="16.0" y="633.0" fill="#45475a" xml:space="preserve">   32   </text>
+<text x="83.2" y="633.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="633.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="633.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="633.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="651.0" fill="#45475a" xml:space="preserve">   33   </text>
+<text x="83.2" y="651.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="651.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="651.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="651.0" fill="#a6e3a1" xml:space="preserve">&quot;--agent&quot;</text>
+<text x="268.0" y="651.0" fill="#9399b2" xml:space="preserve">=&gt;</text>
+<text x="284.8" y="651.0" fill="#cdd6f4" xml:space="preserve"> out</text>
+<text x="318.4" y="651.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="326.8" y="651.0" fill="#b4befe" xml:space="preserve">agent</text>
+<text x="377.2" y="651.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="385.6" y="651.0" fill="#cdd6f4" xml:space="preserve"> iter</text>
+<text x="427.6" y="651.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="436.0" y="651.0" fill="#89b4fa" xml:space="preserve">next</text>
+<text x="469.6" y="651.0" fill="#9399b2" xml:space="preserve">().</text>
+<text x="494.8" y="651.0" fill="#89b4fa" xml:space="preserve">cloned</text>
+<text x="545.2" y="651.0" fill="#9399b2" xml:space="preserve">().</text>
+<text x="570.4" y="651.0" fill="#89b4fa" xml:space="preserve">context</text>
+<text x="629.2" y="651.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="637.6" y="651.0" fill="#a6e3a1" xml:space="preserve">&quot;--agent needs a kind&quot;</text>
+<text x="16.0" y="669.0" fill="#45475a" xml:space="preserve">   34   </text>
+<text x="83.2" y="669.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="669.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="669.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="669.0" fill="#a6e3a1" xml:space="preserve">&quot;--from&quot;</text>
+<text x="259.6" y="669.0" fill="#9399b2" xml:space="preserve">=&gt;</text>
+<text x="284.8" y="669.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="687.0" fill="#45475a" xml:space="preserve">   35   </text>
+<text x="83.2" y="687.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="687.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="687.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="687.0" fill="#313244" xml:space="preserve">│</text>
+<text x="192.4" y="687.0" fill="#cdd6f4" xml:space="preserve">   out</text>
+<text x="242.8" y="687.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="251.2" y="687.0" fill="#b4befe" xml:space="preserve">from</text>
+<text x="293.2" y="687.0" fill="#89dceb" xml:space="preserve">=</text>
+<text x="301.6" y="687.0" fill="#cdd6f4" xml:space="preserve"> iter</text>
+<text x="16.0" y="705.0" fill="#45475a" xml:space="preserve">   36   </text>
+<text x="83.2" y="705.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="705.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="705.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="705.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="705.0" fill="#313244" xml:space="preserve">│</text>
+<text x="251.2" y="705.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="259.6" y="705.0" fill="#89b4fa" xml:space="preserve">next</text>
+<text x="293.2" y="705.0" fill="#9399b2" xml:space="preserve">()</text>
+<text x="16.0" y="723.0" fill="#45475a" xml:space="preserve">   37   </text>
+<text x="83.2" y="723.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="723.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="723.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="723.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="723.0" fill="#313244" xml:space="preserve">│</text>
+<text x="251.2" y="723.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="259.6" y="723.0" fill="#89b4fa" xml:space="preserve">context</text>
+<text x="318.4" y="723.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="326.8" y="723.0" fill="#a6e3a1" xml:space="preserve">&quot;--from needs a byte offset&quot;</text>
+<text x="562.0" y="723.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="570.4" y="723.0" fill="#89dceb" xml:space="preserve">?</text>
+<text x="16.0" y="741.0" fill="#45475a" xml:space="preserve">   38   </text>
+<text x="83.2" y="741.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="741.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="741.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="741.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="741.0" fill="#313244" xml:space="preserve">│</text>
+<text x="251.2" y="741.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="259.6" y="741.0" fill="#89b4fa" xml:space="preserve">parse</text>
+<text x="301.6" y="741.0" fill="#9399b2" xml:space="preserve">()</text>
+<text x="16.0" y="759.0" fill="#45475a" xml:space="preserve">   39   </text>
+<text x="83.2" y="759.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="759.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="759.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="759.0" fill="#313244" xml:space="preserve">│</text>
+<text x="217.6" y="759.0" fill="#313244" xml:space="preserve">│</text>
+<text x="251.2" y="759.0" fill="#9399b2" xml:space="preserve">.</text>
+<text x="259.6" y="759.0" fill="#89b4fa" xml:space="preserve">context</text>
+<text x="318.4" y="759.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="326.8" y="759.0" fill="#a6e3a1" xml:space="preserve">&quot;--from must be a byte offset&quot;</text>
+<text x="578.8" y="759.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="587.2" y="759.0" fill="#89dceb" xml:space="preserve">?</text>
+<text x="16.0" y="777.0" fill="#45475a" xml:space="preserve">   40   </text>
+<text x="83.2" y="777.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="777.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="777.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="777.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="795.0" fill="#45475a" xml:space="preserve">   41   </text>
+<text x="83.2" y="795.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="795.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="795.0" fill="#313244" xml:space="preserve">│</text>
+<text x="158.8" y="795.0" fill="#cdd6f4" xml:space="preserve">   other </text>
+<text x="234.4" y="795.0" fill="#9399b2" xml:space="preserve">=&gt;</text>
+<text x="259.6" y="795.0" fill="#f5c2e7" xml:space="preserve">bail!</text>
+<text x="301.6" y="795.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="310.0" y="795.0" fill="#a6e3a1" xml:space="preserve">&quot;unknown tail option `{other}`&quot;</text>
+<text x="570.4" y="795.0" fill="#9399b2" xml:space="preserve">),</text>
+<text x="16.0" y="813.0" fill="#45475a" xml:space="preserve">   42   </text>
+<text x="83.2" y="813.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="813.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="813.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="831.0" fill="#45475a" xml:space="preserve">   43   </text>
+<text x="83.2" y="831.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="831.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="849.0" fill="#45475a" xml:space="preserve">   44   </text>
+<text x="83.2" y="849.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="849.0" fill="#fab387" xml:space="preserve">Ok</text>
+<text x="133.6" y="849.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="142.0" y="849.0" fill="#cdd6f4" xml:space="preserve">out</text>
+<text x="167.2" y="849.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="16.0" y="867.0" fill="#45475a" xml:space="preserve">   45   </text>
+<text x="83.2" y="867.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="885.0" fill="#45475a" xml:space="preserve">   46   </text>
+<text x="16.0" y="903.0" fill="#45475a" xml:space="preserve">   47   </text>
+<text x="83.2" y="903.0" fill="#9399b2" xml:space="preserve">/// `herdr-nvim tail`: prints one JSON object describing what the agent has</text>
+<text x="16.0" y="921.0" fill="#45475a" xml:space="preserve">   48   </text>
+<text x="83.2" y="921.0" fill="#9399b2" xml:space="preserve">/// said and done since `--from`.</text>
+<text x="16.0" y="939.0" fill="#45475a" xml:space="preserve">   49   </text>
+<text x="83.2" y="939.0" fill="#cba6f7" xml:space="preserve">pub</text>
+<text x="116.8" y="939.0" fill="#cba6f7" xml:space="preserve">fn</text>
+<text x="142.0" y="939.0" fill="#89b4fa" xml:space="preserve">tail</text>
+<text x="175.6" y="939.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="184.0" y="939.0" fill="#eba0ac" xml:space="preserve">args</text>
+<text x="217.6" y="939.0" fill="#9399b2" xml:space="preserve">:</text>
+<text x="234.4" y="939.0" fill="#89dceb" xml:space="preserve">&amp;</text>
+<text x="242.8" y="939.0" fill="#9399b2" xml:space="preserve">[</text>
+<text x="251.2" y="939.0" fill="#f9e2af" xml:space="preserve">String</text>
+<text x="301.6" y="939.0" fill="#9399b2" xml:space="preserve">])</text>
+<text x="326.8" y="939.0" fill="#9399b2" xml:space="preserve">-&gt;</text>
+<text x="352.0" y="939.0" fill="#f9e2af" xml:space="preserve">Result</text>
+<text x="402.4" y="939.0" fill="#9399b2" xml:space="preserve">&lt;</text>
+<text x="410.8" y="939.0" fill="#cba6f7" xml:space="preserve">i32</text>
+<text x="436.0" y="939.0" fill="#9399b2" xml:space="preserve">&gt;</text>
+<text x="452.8" y="939.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="957.0" fill="#45475a" xml:space="preserve">   50   </text>
+<text x="83.2" y="957.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="957.0" fill="#cba6f7" xml:space="preserve">match</text>
+<text x="167.2" y="957.0" fill="#89b4fa" xml:space="preserve">tail_inner</text>
+<text x="251.2" y="957.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="259.6" y="957.0" fill="#cdd6f4" xml:space="preserve">args</text>
+<text x="293.2" y="957.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="310.0" y="957.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="975.0" fill="#45475a" xml:space="preserve">   51   </text>
+<text x="83.2" y="975.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="975.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="975.0" fill="#fab387" xml:space="preserve">Ok</text>
+<text x="167.2" y="975.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="175.6" y="975.0" fill="#cdd6f4" xml:space="preserve">value</text>
+<text x="217.6" y="975.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="234.4" y="975.0" fill="#9399b2" xml:space="preserve">=&gt;</text>
+<text x="259.6" y="975.0" fill="#9399b2" xml:space="preserve">{</text>
+<text x="16.0" y="993.0" fill="#45475a" xml:space="preserve">   52   </text>
+<text x="83.2" y="993.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="993.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="993.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="993.0" fill="#f5c2e7" xml:space="preserve">println!</text>
+<text x="251.2" y="993.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="259.6" y="993.0" fill="#a6e3a1" xml:space="preserve">&quot;{value}&quot;</text>
+<text x="335.2" y="993.0" fill="#9399b2" xml:space="preserve">);</text>
+<text x="16.0" y="1011.0" fill="#45475a" xml:space="preserve">   53   </text>
+<text x="83.2" y="1011.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1011.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="1011.0" fill="#313244" xml:space="preserve">│</text>
+<text x="184.0" y="1011.0" fill="#fab387" xml:space="preserve">Ok</text>
+<text x="200.8" y="1011.0" fill="#9399b2" xml:space="preserve">(</text>
+<text x="209.2" y="1011.0" fill="#fab387" xml:space="preserve">0</text>
+<text x="217.6" y="1011.0" fill="#9399b2" xml:space="preserve">)</text>
+<text x="16.0" y="1029.0" fill="#45475a" xml:space="preserve">   54   </text>
+<text x="83.2" y="1029.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1029.0" fill="#313244" xml:space="preserve">│</text>
+<text x="150.4" y="1029.0" fill="#9399b2" xml:space="preserve">}</text>
+<text x="16.0" y="1047.0" fill="#45475a" xml:space="preserve">   55   </text>
+<text x="83.2" y="1047.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1047.0" fill="#313244" xml:space="preserve">│</text>
+<text x="133.6" y="1047.0" fill="#89b4fa" xml:space="preserve">╭─────────────────────────────</text>
+<text x="385.6" y="1047.0" fill="#a6adc8" xml:space="preserve"> claude </text>
+<text x="452.8" y="1047.0" fill="#89b4fa" xml:space="preserve">──────────────────────────────╮</text>
+<text x="16.0" y="1065.0" fill="#45475a" xml:space="preserve">   56   </text>
+<text x="83.2" y="1065.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1065.0" fill="#313244" xml:space="preserve">│</text>
+<text x="133.6" y="1065.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="142.0" y="1065.0" fill="#6c7086" xml:space="preserve">&lt;&lt;&lt;</text>
+<text x="167.2" y="1065.0" fill="#cdd6f4" xml:space="preserve">e offset recorded when </text>
+<rect x="360.4" y="1052.0" width="25.2" height="18.0" fill="#313244"/>
+<text x="360.4" y="1065.0" fill="#a6e3a1" xml:space="preserve">ask</text>
+<text x="385.6" y="1065.0" fill="#cdd6f4" xml:space="preserve"> sent a message, so everything past   </text>
+<text x="704.8" y="1065.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="16.0" y="1083.0" fill="#45475a" xml:space="preserve">   57   </text>
+<text x="83.2" y="1083.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1083.0" fill="#313244" xml:space="preserve">│</text>
+<text x="133.6" y="1083.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="142.0" y="1083.0" fill="#cdd6f4" xml:space="preserve">that offset is that message&#x27;s reply — since </text>
+<rect x="511.6" y="1070.0" width="100.8" height="18.0" fill="#313244"/>
+<text x="511.6" y="1083.0" fill="#a6e3a1" xml:space="preserve">agent.prompt</text>
+<text x="612.4" y="1083.0" fill="#cdd6f4" xml:space="preserve"> returns   </text>
+<text x="704.8" y="1083.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="16.0" y="1101.0" fill="#45475a" xml:space="preserve">   58   </text>
+<text x="83.2" y="1101.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1101.0" fill="#313244" xml:space="preserve">│</text>
+<text x="133.6" y="1101.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="142.0" y="1101.0" fill="#cdd6f4" xml:space="preserve">only lifecycle state, never text.                                  </text>
+<text x="704.8" y="1101.0" fill="#89b4fa" xml:space="preserve">│</text>
+<text x="16.0" y="1119.0" fill="#45475a" xml:space="preserve">   59   </text>
+<text x="83.2" y="1119.0" fill="#313244" xml:space="preserve">│</text>
+<text x="116.8" y="1119.0" fill="#9399b2" xml:space="preserve">} </text>
+<text x="133.6" y="1119.0" fill="#89b4fa" xml:space="preserve">╰────────────────────────</text>
+<text x="343.6" y="1119.0" fill="#a6adc8" xml:space="preserve"> ✓ done · q close </text>
+<text x="494.8" y="1119.0" fill="#89b4fa" xml:space="preserve">─────────────────────────╯</text>
+<text x="16.0" y="1137.0" fill="#45475a" xml:space="preserve">   60   </text>
+<text x="83.2" y="1137.0" fill="#9399b2" xml:space="preserve">}</text>
+<rect x="16.0" y="1142.0" width="67.2" height="18.0" fill="#89b4fa"/>
+<text x="16.0" y="1155.0" fill="#181825" font-weight="600" xml:space="preserve"> NORMAL </text>
+<rect x="83.2" y="1142.0" width="67.2" height="18.0" fill="#313244"/>
+<text x="83.2" y="1155.0" fill="#89b4fa" xml:space="preserve">  main </text>
+<text x="150.4" y="1155.0" fill="#fab387" xml:space="preserve"> 󱘗 </text>
+<text x="175.6" y="1155.0" fill="#cdd6f4" xml:space="preserve"> src/</text>
+<text x="217.6" y="1155.0" fill="#cdd6f4" font-weight="600" xml:space="preserve">tail.rs</text>
+<rect x="646.0" y="1142.0" width="100.8" height="18.0" fill="#313244"/>
+<text x="646.0" y="1155.0" fill="#89b4fa" xml:space="preserve"> Top   1:1  </text>
+<rect x="746.8" y="1142.0" width="75.6" height="18.0" fill="#89b4fa"/>
+<text x="746.8" y="1155.0" fill="#181825" font-weight="600" xml:space="preserve">  15:05 </text>
+</svg>

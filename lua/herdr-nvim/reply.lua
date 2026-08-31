@@ -60,11 +60,25 @@ local function footer()
   return " " .. label .. " · q close "
 end
 
+--- Rows a window `width` wide needs to show `lines` with wrap on.
+---
+--- An agent's answer is usually one long paragraph, so counting buffer lines
+--- says "1" and gives it a three-row window showing the middle of a sentence.
+local function wrapped_rows(lines, width)
+  local rows = 0
+  for _, line in ipairs(lines) do
+    local w = vim.fn.strdisplaywidth(line)
+    rows = rows + math.max(1, math.ceil(w / math.max(1, width)))
+  end
+  return rows
+end
+
 local function render()
   if not Reply.is_open() then
     return
   end
   local lines = {}
+  local newest = 1
   if #state.turns == 0 then
     table.insert(lines, "…")
   else
@@ -72,6 +86,7 @@ local function render()
       if i > 1 then
         table.insert(lines, "")
       end
+      newest = #lines + 1
       vim.list_extend(lines, vim.split(turn, "\n", { plain = true }))
     end
   end
@@ -79,13 +94,16 @@ local function render()
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
   vim.bo[state.buf].modifiable = false
 
-  local want = math.max(MIN_HEIGHT, math.min(#lines, MAX_HEIGHT))
+  local width = vim.api.nvim_win_get_width(state.win)
+  local want = math.max(MIN_HEIGHT, math.min(wrapped_rows(lines, width), MAX_HEIGHT))
   pcall(vim.api.nvim_win_set_height, state.win, want)
   pcall(vim.api.nvim_win_set_config, state.win, { footer = footer(), footer_pos = "center" })
-  -- Keep the newest text in view without moving the user's own cursor: the
-  -- window is not focused, so scrolling it means asking it to scroll itself.
+  -- Put the newest turn at the top rather than scrolling to the very bottom:
+  -- an answer longer than the window should start at its first word, not its
+  -- last. The window is not focused, so it has to scroll itself.
   pcall(vim.api.nvim_win_call, state.win, function()
-    vim.cmd("normal! G")
+    vim.api.nvim_win_set_cursor(state.win, { math.min(newest, #lines), 0 })
+    vim.cmd("normal! zt")
   end)
 end
 
