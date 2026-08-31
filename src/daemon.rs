@@ -9,6 +9,7 @@ use anyhow::{bail, Context as _, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -249,16 +250,46 @@ fn log_path(session_key: &str, tab_id: &str) -> PathBuf {
     ))
 }
 
-/// The plugin checkout that contains this binary: `<root>/target/<profile>/herdr-nvim`.
+/// The plugin checkout holding the Lua half.
+///
+/// Herdr sets `HERDR_PLUGIN_ROOT` for everything it invokes, and that is the
+/// authority: it stays right when the binary has been copied or symlinked
+/// somewhere else, which the path-shape guess below cannot survive. The guess
+/// is the fallback for the calls that do not come from Herdr -- the Lua side
+/// shelling out to `ask`, or a developer running the binary by hand.
+pub fn plugin_root() -> Option<PathBuf> {
+    plugin_root_from(
+        env::var_os("HERDR_PLUGIN_ROOT").as_deref(),
+        env::current_exe().ok().as_deref(),
+    )
+}
+
+/// The resolution rule, without reading the environment, so it can be tested
+/// without mutating process-global state that other tests share.
+fn plugin_root_from(reported: Option<&OsStr>, exe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = reported
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|root| has_bundled_lua(root))
+    {
+        return Some(root);
+    }
+    plugin_root_of(exe?)
+}
+
+/// The checkout containing a binary at `<root>/target/<profile>/herdr-nvim`.
 /// `None` when the binary was moved somewhere without that shape, in which
 /// case the daemon simply gets no bundled Lua.
 pub fn plugin_root_of(exe: &Path) -> Option<PathBuf> {
     let root = exe.parent()?.parent()?.parent()?;
+    has_bundled_lua(root).then(|| root.to_path_buf())
+}
+
+fn has_bundled_lua(root: &Path) -> bool {
     root.join("lua")
         .join("herdr-nvim")
         .join("init.lua")
         .is_file()
-        .then(|| root.to_path_buf())
 }
 
 /// Load the Lua half we ship with, but only if the user has not installed it
@@ -331,13 +362,13 @@ fn spawn(
     if let Some(dir) = crate::config::config_dir() {
         cmd.env("HERDR_NVIM_CONFIG_DIR", dir);
     }
+    // Passed by environment rather than interpolated into the -c string: a path
+    // needs no Lua escaping and cannot break the command line.
+    if let Some(root) = plugin_root() {
+        cmd.env("HERDR_NVIM_PLUGIN_ROOT", root);
+        cmd.arg("-c").arg(BUNDLED_LUA_BOOTSTRAP);
+    }
     if let Ok(exe) = env::current_exe() {
-        // Passed by environment rather than interpolated into the -c string:
-        // a path needs no Lua escaping and cannot break the command line.
-        if let Some(root) = plugin_root_of(&exe) {
-            cmd.env("HERDR_NVIM_PLUGIN_ROOT", root);
-            cmd.arg("-c").arg(BUNDLED_LUA_BOOTSTRAP);
-        }
         cmd.env("HERDR_NVIM_BIN", exe);
     }
     // SAFETY: setsid is async-signal-safe and has no preconditions here.
@@ -1208,6 +1239,32 @@ mod tests {
         // A binary copied onto $PATH has no checkout above it, so the daemon
         // gets no bundled Lua rather than a wrong runtimepath entry.
         assert!(plugin_root_of(Path::new("/usr/local/bin/herdr-nvim")).is_none());
+    }
+
+    #[test]
+    fn herdrs_reported_root_wins_over_the_path_shape_guess() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let stray = Path::new("/usr/local/bin/herdr-nvim");
+        // Copied or symlinked out of the checkout, the path shape tells us
+        // nothing -- but Herdr still knows where the plugin lives.
+        assert_eq!(plugin_root_of(stray), None);
+        assert_eq!(
+            plugin_root_from(Some(root.as_os_str()), Some(stray)).as_deref(),
+            Some(root)
+        );
+        // A root that does not carry the Lua is not trusted: taking it on faith
+        // would silently disable the bundled fallback.
+        assert_eq!(
+            plugin_root_from(Some(OsStr::new("/nonexistent")), Some(stray)),
+            None
+        );
+        // Empty or absent falls back to the guess.
+        let exe = root.join("target").join("release").join("herdr-nvim");
+        assert_eq!(
+            plugin_root_from(Some(OsStr::new("")), Some(&exe)).as_deref(),
+            Some(root)
+        );
+        assert_eq!(plugin_root_from(None, Some(&exe)).as_deref(), Some(root));
         assert!(plugin_root_of(Path::new("/herdr-nvim")).is_none());
         assert!(plugin_root_of(Path::new("herdr-nvim")).is_none());
     }

@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-31
 
 ### Added
 
@@ -51,10 +51,33 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `herdr-nvim tail --path P [--agent KIND] [--from BYTES]` prints what an agent
   said and edited past a byte offset in its transcript, as JSON.
 
+- `:checkhealth herdr-nvim` reports whether the reply view and edit review are
+  on, what the agent was last seen doing, and that only Claude Code and pi
+  transcripts can be read -- so an agent whose answer never appears is a known
+  limitation rather than a mystery. It also errors when the binary predates
+  `tail`, the shape "updated the Lua, did not rebuild" takes now.
+- Updating and uninstalling are documented, including what an uninstall leaves
+  behind (your `config.env`, the state directory, and the keys `setup-keys`
+  wrote) and that a running sidebar keeps the Lua its daemon started with.
+
 ### Changed
 
 - `focus_after_ask` defaults to `false`: the agent's pane was focused because
   there was nowhere else to read the answer, and now there is.
+- The bundled Lua is found through Herdr's own `HERDR_PLUGIN_ROOT` before
+  falling back to guessing from the binary's path. The guess cannot survive the
+  binary being copied or symlinked out of the checkout, which silently left a
+  sidebar with no `:HerdrAsk`; a reported root that does not actually carry the
+  Lua is still ignored rather than trusted.
+
+### Fixed
+
+- An agent edit never found its buffer when the two spellings of the path
+  differed -- `/tmp` against `/private/tmp` on macOS, where they name the same
+  file. Both sides now resolve before they are compared.
+- A released agent left a final `unknown` state behind that could hide a pane
+  that was still working, because the statusline took the most recently updated
+  row and `os.time()` ties are common at second resolution.
 
 ## [0.1.0] - 2026-08-29
 
@@ -180,5 +203,6 @@ compare against.
 - `tests/fixtures/agent_output_claude.txt`, which no test referenced, and a
   `.gitignore` entry for a `config.env` no code reads.
 
-[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.1.0

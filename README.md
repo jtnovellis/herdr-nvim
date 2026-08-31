@@ -188,6 +188,45 @@ the binary Herdr built. Elsewhere it looks for `target/release/herdr-nvim`
 next to the plugin, then `herdr-nvim` on `$PATH`, or the `binary` option.
 `:checkhealth herdr-nvim` shows what was found.
 
+### Updating
+
+```sh
+herdr plugin install jtnovellis/herdr-nvim   # re-installs at the latest commit
+```
+
+Re-installing rebuilds the binary, so the Lua and the binary move together. If
+you also installed the Neovim plugin yourself, update it the same way you
+update your other plugins (`:Lazy update herdr-nvim`) — **yours wins over the
+bundled copy**, so a stale one leaves you on the old Lua with a new binary.
+`:checkhealth herdr-nvim` names that mismatch when it sees it.
+
+A running sidebar keeps the Lua it loaded when its daemon started. Close the
+tab (or toggle the sidebar off and quit the daemon with `:qa`) to pick up an
+update; unsaved buffers are written first either way.
+
+### Uninstalling
+
+```sh
+herdr plugin uninstall herdr-nvim
+```
+
+That removes the checkout Herdr manages and unregisters the plugin, including
+its actions, events and the sidebar pane. Three things it deliberately leaves
+behind, because they are yours:
+
+- `~/.config/herdr/plugins/config/herdr-nvim/` — your `config.env`.
+- `~/.local/state/herdr/plugins/herdr-nvim/` — daemon records and logs.
+- The `[[keys.command]]` blocks in `~/.config/herdr/config.toml` that
+  `setup-keys` added, and any Neovim-side install of your own.
+
+Stop any daemons still running first, or they outlive the plugin that knows
+how to reach them:
+
+```sh
+herdr plugin action invoke gc --plugin herdr-nvim   # before uninstalling
+rm -rf ~/.local/state/herdr/plugins/herdr-nvim      # after, if you want it gone
+```
+
 ## The sidebar
 
 Press your toggle key in any tab:

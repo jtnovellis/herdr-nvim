@@ -155,13 +155,11 @@ fn seed_config_env(dir: &Path, example: &Path) -> Option<PathBuf> {
     Some(target)
 }
 
-/// The plugin checkout, derived from the binary at `<root>/target/<profile>/`.
+/// The plugin checkout holding `config.env.example`. Herdr's own
+/// `HERDR_PLUGIN_ROOT` first, then the binary's path shape -- see
+/// `daemon::plugin_root`.
 fn plugin_root() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let root = exe.parent()?.parent()?.parent()?;
-    root.join("config.env.example")
-        .is_file()
-        .then(|| root.to_path_buf())
+    crate::daemon::plugin_root().filter(|root| root.join("config.env.example").is_file())
 }
 
 #[cfg(test)]

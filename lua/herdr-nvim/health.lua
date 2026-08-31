@@ -216,12 +216,44 @@ function M.check()
     else
       health.error("this binary predates :HerdrAsk; rebuild it with `cargo build --release`")
     end
+    -- Same skew, one release later: an update that did not re-run the build
+    -- leaves new Lua asking an old binary for a subcommand it has never heard
+    -- of, and the reply view would just never fill in.
+    if usage and not usage:find("\n  tail ", 1, true) then
+      health.error(
+        "this binary predates the reply view; the agent's answer cannot be read back. "
+          .. "Re-run `herdr plugin install jtnovellis/herdr-nvim`, or `cargo build --release`"
+      )
+    end
   end
   local target = require("herdr-nvim.ask").target()
   if target then
     health.info("follow-ups go to " .. (target.agent or "agent") .. " (" .. tostring(target.pane_id) .. ")")
   else
     health.info("no agent remembered yet; the first :HerdrAsk picks one")
+  end
+
+  health.start("herdr-nvim: reply and review")
+  local cfg = require("herdr-nvim").config
+  if cfg.reply and cfg.reply.enabled ~= false then
+    -- Reading an answer back means parsing the agent's own transcript, and
+    -- only two formats are understood. Saying so here is cheaper than a user
+    -- concluding the feature is broken when their agent simply is not one.
+    health.ok("reply view on; readable transcripts: Claude Code, pi")
+    health.info("any other agent: no float opens and its own Herdr pane stays the place to read")
+  else
+    health.info("reply view off (`reply = { enabled = false }`)")
+  end
+  local agent = require("herdr-nvim.agent").status()
+  if agent then
+    health.info(("last agent state seen: %s is %s"):format(agent.agent or "agent", agent.status))
+  else
+    health.info("no agent state pushed yet (Herdr sends one when an agent starts or stops working)")
+  end
+  if cfg.review and cfg.review.enabled ~= false then
+    health.ok(("edit review on; %d unreviewed hunk(s)"):format(require("herdr-nvim.review").count()))
+  else
+    health.info("edit review off (`review = { enabled = false }`)")
   end
 
   health.start("herdr-nvim: file picker")

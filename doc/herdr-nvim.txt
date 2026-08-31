@@ -46,10 +46,29 @@ inside a sidebar.
 - Neovim 0.11 or newer (for `--remote-ui` and `:detach`)
 - Herdr 0.8.2 or newer
 - Linux or macOS
-- Rust 1.82 or newer, to build the binary
+- Rust 1.82 or newer, only when there is no prebuilt binary for your platform
 - git (optional; enables dirty files, diff stats and repo-wide picker search)
 
 The plugin refuses to load on older Neovim with an error message.
+
+                                                        *herdr-nvim-updating*
+Re-installing rebuilds the binary, so the Lua and the binary move together: >
+
+    herdr plugin install jtnovellis/herdr-nvim
+<
+If you also installed the Neovim plugin yourself, update that too -- yours wins
+over the bundled copy (see |herdr-nvim-bundled-lua|), so a stale one leaves new
+binary with old Lua. |:checkhealth| names that mismatch. A running sidebar
+keeps the Lua its daemon loaded at start; close the tab to pick up an update.
+
+                                                     *herdr-nvim-uninstalling*
+`herdr plugin uninstall herdr-nvim` removes the checkout Herdr manages and
+unregisters the actions, events and sidebar pane. Your own files are left
+alone: `config.env` in the plugin config directory, the daemon records and
+logs under the state directory, the `[[keys.command]]` blocks `setup-keys`
+added to your `config.toml`, and any Neovim-side install of your own. Stop
+running daemons first (`herdr plugin action invoke gc --plugin herdr-nvim`),
+or they outlive the plugin that knows how to reach them.
 
 ==============================================================================
 3. SETUP                                                     *herdr-nvim-setup*
