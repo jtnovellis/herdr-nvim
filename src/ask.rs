@@ -243,13 +243,26 @@ fn session_marker(fresh: &herdr::AgentInfo, cwd: &Path) -> Value {
             cwds.push(agent_cwd);
         }
     }
-    let Some(path) = sessions::session_path_for(
+    let existing = sessions::session_path_for(
         session.kind.as_deref(),
         session.value.as_deref(),
         &agent,
         &cwds,
-    ) else {
-        return Value::Null;
+    );
+    // A brand-new agent writes its transcript when it receives its first
+    // message -- this one. Naming the file before it exists is what lets the
+    // very first ask still get a reply; the reader waits for it to appear.
+    let path = match existing {
+        Some(path) => path,
+        None => match (session.kind.as_deref(), session.value.as_deref()) {
+            (Some("id"), Some(id)) if agent == "claude" => {
+                match sessions::claude_session_path_expected(id, cwd) {
+                    Some(path) => path,
+                    None => return Value::Null,
+                }
+            }
+            _ => return Value::Null,
+        },
     };
     json!({
         "path": path.to_string_lossy(),

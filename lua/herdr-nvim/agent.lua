@@ -204,6 +204,46 @@ local function schedule_read()
   end)
 end
 
+-- A freshly started agent has no transcript until the message we just sent
+-- creates one, so the first watch attempt usually fails. Retrying briefly is
+-- what makes the *first* ask to an agent behave like every later one; without
+-- it the reply only lands when the agent goes quiet.
+local WATCH_RETRY_MS = 250
+local WATCH_ATTEMPTS = 20
+
+local function start_watch(session, attempt)
+  attempt = attempt or 1
+  if state.session ~= session then
+    return -- superseded by a newer ask
+  end
+  local watcher = uv.new_fs_event()
+  local ok = pcall(watcher.start, watcher, session.path, {}, function(err)
+    if not err then
+      schedule_read()
+    end
+  end)
+  if ok then
+    state.watcher = watcher
+    return
+  end
+  if not watcher:is_closing() then
+    watcher:close()
+  end
+  if attempt >= WATCH_ATTEMPTS then
+    return -- the status change that ends the turn still triggers a read
+  end
+  local timer = uv.new_timer()
+  timer:start(WATCH_RETRY_MS, 0, function()
+    timer:stop()
+    if not timer:is_closing() then
+      timer:close()
+    end
+    vim.schedule(function()
+      start_watch(session, attempt + 1)
+    end)
+  end)
+end
+
 --- Follow the reply to a message just sent to `pane_id`.
 ---
 --- `session` is the marker `herdr-nvim ask` returns: the transcript path and
@@ -223,22 +263,7 @@ function Agent.follow(pane_id, session)
   }
   -- Watch the file itself rather than its directory: a transcript directory
   -- holds every session for the project and would wake us for all of them.
-  local watcher = uv.new_fs_event()
-  local ok = pcall(watcher.start, watcher, session.path, {}, function(err)
-    if err then
-      return
-    end
-    schedule_read()
-  end)
-  if ok then
-    state.watcher = watcher
-  else
-    -- No watch (the file may not exist yet); the status change that ends the
-    -- turn still triggers a read, so the reply is not lost, only later.
-    if not watcher:is_closing() then
-      watcher:close()
-    end
-  end
+  start_watch(state.session)
   touch_idle()
   return true
 end

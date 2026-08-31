@@ -682,6 +682,25 @@ pub(crate) fn claude_session_path(id: &str, cwds: &[&Path]) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Where a claude session's transcript *will* be, whether or not it is there
+/// yet.
+///
+/// A freshly started agent has no transcript until its first message creates
+/// one -- and the first message is exactly the one whose reply we want to
+/// follow. Requiring the file to exist therefore loses the reply to every
+/// first ask, so the marker is allowed to name a file that does not exist yet
+/// and the reader waits for it.
+pub(crate) fn claude_session_path_expected(id: &str, cwd: &Path) -> Option<PathBuf> {
+    if !valid_session_id(id) {
+        return None;
+    }
+    Some(
+        claude_projects_root()?
+            .join(claude_project_dir_name(cwd))
+            .join(format!("{id}.jsonl")),
+    )
+}
+
 /// The transcript file behind a pane's `agent_session`, if there is one we
 /// can resolve. Herdr reports either a literal `path` (any agent) or an `id`
 /// (claude, resolved under the projects root). Shared by the file picker and
@@ -735,6 +754,29 @@ mod discovery_tests {
             claude_project_dir_name(Path::new("/Users/jtnovellis/developer/herdr-nvim")),
             "-Users-jtnovellis-developer-herdr-nvim"
         );
+    }
+
+    #[test]
+    fn the_expected_path_is_named_before_the_file_exists() {
+        // The whole point: a brand-new agent has no transcript yet, and the
+        // message that creates it is the one whose reply we want.
+        let cwd = Path::new("/repo/x");
+        let id = "00000000-0000-4000-8000-000000000001";
+        let expected = claude_session_path_expected(id, cwd).expect("a path");
+        assert!(expected.ends_with(format!("{id}.jsonl")));
+        assert!(expected.to_string_lossy().contains("-repo-x"));
+        assert!(
+            !expected.is_file(),
+            "the test would prove nothing otherwise"
+        );
+        // The existence-checking resolver still declines it, which is right:
+        // the picker must not offer a transcript that is not there.
+        assert_eq!(
+            session_path_for(Some("id"), Some(id), "claude", &[cwd]),
+            None
+        );
+        // A bad id is refused by both.
+        assert_eq!(claude_session_path_expected("../escape", cwd), None);
     }
 
     #[test]
