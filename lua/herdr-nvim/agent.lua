@@ -90,13 +90,22 @@ function Agent.status(pane_id)
   if state.following and state.status[state.following] then
     return state.status[state.following]
   end
-  local latest
+  -- Prefer a pane that is actually doing something. A released agent leaves a
+  -- final `unknown` behind, and picking the most recent entry outright would
+  -- let that stale row mask a pane that really is working. Ties on `at` are
+  -- common -- os.time() has second resolution -- so the comparison must not
+  -- depend on pairs() order either.
+  local latest, fallback
   for _, entry in pairs(state.status) do
-    if not latest or (entry.at or 0) >= (latest.at or 0) then
-      latest = entry
+    if entry.status ~= "unknown" then
+      if not latest or (entry.at or 0) > (latest.at or 0) then
+        latest = entry
+      end
+    elseif not fallback or (entry.at or 0) > (fallback.at or 0) then
+      fallback = entry
     end
   end
-  return latest
+  return latest or fallback
 end
 
 --- Every pane state we have been told about.

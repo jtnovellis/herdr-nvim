@@ -46,4 +46,17 @@ check(line:find("claude", 1, true) ~= nil, "statusline does not name the agent: 
 Agent.on_status('{"pane_id":"wF:pC","agent":"claude","status":"idle"}')
 check(require("herdr-nvim").statusline() == "", "idle agent still in the statusline")
 
+-- A released agent leaves a final `unknown` behind. That row must not mask a
+-- pane that is genuinely working, including when it arrives later -- os.time()
+-- has second resolution, so "later" and "same second" both have to be right.
+Agent.on_status('{"pane_id":"wF:pC","agent":"claude","status":"working"}')
+Agent.on_status('{"pane_id":"wF:pV","agent":"claude","status":"unknown"}')
+local masked = require("herdr-nvim").statusline()
+check(masked:find("claude", 1, true) ~= nil, "a released agent masked a working one: [" .. masked .. "]")
+check(Agent.status().pane_id == "wF:pC", "status() picked the released pane")
+
+-- With nothing live, the unknown row is all there is, and shows as nothing.
+Agent.on_status('{"pane_id":"wF:pC","agent":"claude","status":"unknown"}')
+check(require("herdr-nvim").statusline() == "", "unknown rendered an icon")
+
 pass("agent status")
