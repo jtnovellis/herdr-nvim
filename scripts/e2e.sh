@@ -32,8 +32,34 @@ print("AREA", a["width"], a["height"]); print("ZOOMED", str(l.get("zoomed", Fals
 for p in l["panes"]: r=p["rect"]; print(p["pane_id"], r["x"]-a["x"], r["y"]-a["y"], r["width"], r["height"])'; }
 step() { echo "== $*"; }
 
+# Displacing the real plugin config.env is unavoidable -- `plugin action
+# invoke` does not forward the environment, so a setting can only be tested
+# through the file. Making it *survivable* is not: the backup lives beside the
+# original rather than in $TMP (which the trap deletes), and the restore runs
+# from the trap rather than inline, so an interrupt mid-test still puts the
+# user's file back instead of leaving HERDR_NVIM_SIDE=left in it forever.
+CFG_TARGET=""; CFG_BACKUP=""; CFG_HAD_ORIGINAL=""
+displace_config_env() { # $1 = contents
+  CFG_TARGET="$(hs plugin config-dir herdr-nvim)/config.env"
+  mkdir -p "$(dirname "$CFG_TARGET")"
+  CFG_BACKUP="$CFG_TARGET.e2e-bak.$$"
+  if [ -f "$CFG_TARGET" ]; then cp "$CFG_TARGET" "$CFG_BACKUP"; CFG_HAD_ORIGINAL=1
+  else : > "$CFG_BACKUP"; CFG_HAD_ORIGINAL=""; fi
+  printf '%s\n' "$1" > "$CFG_TARGET"
+}
+restore_config_env() {
+  [ -n "$CFG_TARGET" ] || return 0
+  if [ -n "$CFG_HAD_ORIGINAL" ]; then cp "$CFG_BACKUP" "$CFG_TARGET"; else rm -f "$CFG_TARGET"; fi
+  rm -f "$CFG_BACKUP"
+  CFG_TARGET=""; CFG_BACKUP=""; CFG_HAD_ORIGINAL=""
+}
+
+CLEANED=""
 cleanup() {
+  [ -n "$CLEANED" ] && return 0
+  CLEANED=1
   set +e
+  restore_config_env
   hs workspace list 2>/dev/null | py 'import json,sys
 try:
   r=json.load(sys.stdin)["result"]
@@ -45,7 +71,7 @@ except Exception: pass' | while read -r ws; do [ -n "$ws" ] && hs workspace clos
   [ -n "$FOREIGN_PID" ] && kill -9 "$FOREIGN_PID" 2>/dev/null
   rm -rf "$TMP"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 step "build"
 (cd "$ROOT" && cargo build --release 2>&1 | tail -1)
@@ -122,16 +148,14 @@ for k in b: assert all(abs(x-y)<=2 for x,y in zip(b[k],a[k])), (k,b[k],a[k])' "$
 
 step "left side + zoomed tab"
 hide_sidebar
-# env is not passed through `plugin action invoke`; use the config file instead
-CFGDIR=$(hs plugin config-dir herdr-nvim); mkdir -p "$CFGDIR"; [ -f "$CFGDIR/config.env" ] && cp "$CFGDIR/config.env" "$TMP/config.env.bak"
-printf 'HERDR_NVIM_SIDE=left\n' > "$CFGDIR/config.env"
+displace_config_env 'HERDR_NVIM_SIDE=left' 
 hs pane zoom --on --pane "$ROOT_PANE" >/dev/null
 hs plugin action invoke toggle --plugin herdr-nvim >/dev/null; sleep 4
 SB=$(state_get "$TAB" sidebar_pane_id | tr -d '"')
 rects "$ROOT_PANE" | grep -q "^ZOOMED false" || fail "tab still zoomed"
 rects "$ROOT_PANE" | grep "^$SB " | awk '{exit ($2==0)?0:1}' || fail "left sidebar not at x=0: $(rects "$ROOT_PANE")"
 hs plugin action invoke toggle --plugin herdr-nvim >/dev/null; wait_pane_gone "$SB" || fail "left sidebar not closed"
-rm -f "$CFGDIR/config.env"; [ -f "$TMP/config.env.bak" ] && cp "$TMP/config.env.bak" "$CFGDIR/config.env"
+restore_config_env
 hs pane zoom --off --pane "$ROOT_PANE" >/dev/null 2>&1 || true
 
 step "recovery: fabricated mid-open record is finished by gc"
@@ -221,6 +245,93 @@ echo "$OUT" | grep -q '"code":"no_agents"' || fail "expected no_agents, got: $OU
 # `ask` exits 1 on a refusal and pipefail would propagate that, so capture first.
 BLANK=$(printf '%s' '{"message":"  "}' | env "${ENV_ASK[@]}" "$BIN" ask || true)
 echo "$BLANK" | grep -q '"code":"no_message"' || fail "a blank ask was not refused: $BLANK"
+
+step "tail reads a transcript forward from an offset"
+# The reply view's whole trick: `ask` records the file's length when it sends,
+# so everything past that offset is the answer to that message.
+FIRST='{"message":{"role":"assistant","content":[{"type":"text","text":"before you asked"}]},"type":"assistant","timestamp":"2026-08-29T09:00:00.000Z"}'
+printf '%s\n' "$FIRST" > "$TMP/session.jsonl"
+OFFSET=$(py 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$TMP/session.jsonl")
+{
+  printf '%s\n' '{"message":{"role":"assistant","content":[{"type":"text","text":"the answer"}]},"type":"assistant","timestamp":"2026-08-29T09:00:10.000Z"}'
+  printf '%s\n' '{"message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/repo/a.txt","old_string":"two","new_string":"2"}}]},"type":"assistant","timestamp":"2026-08-29T09:00:20.000Z"}'
+} >> "$TMP/session.jsonl"
+TAIL=$("$BIN" tail --path "$TMP/session.jsonl" --agent claude --from "$OFFSET")
+echo "$TAIL" | grep -q '"the answer"' || fail "tail lost the reply: $TAIL"
+if echo "$TAIL" | grep -q 'before you asked'; then fail "tail read past the offset backwards: $TAIL"; fi
+echo "$TAIL" | grep -q '"old":"two"' || fail "tail lost the edit payload: $TAIL"
+echo "$TAIL" | grep -q '"new":"2"' || fail "tail lost the edit payload: $TAIL"
+# An agent with no parser is empty, never an error: the caller falls back.
+NOPARSE=$("$BIN" tail --path "$TMP/session.jsonl" --agent codex --from 0)
+echo "$NOPARSE" | grep -q '"ok":true' || fail "unknown agent errored: $NOPARSE"
+echo "$NOPARSE" | grep -q '"reply":\[\]' || fail "unknown agent invented a reply: $NOPARSE"
+
+step "setup-keys binds, is idempotent, and never steals a bound key"
+# Isolated XDG_CONFIG_HOME: this must never touch the real Herdr config.
+KEYS="$TMP/keyhome"
+FIRST_RUN=$(env XDG_CONFIG_HOME="$KEYS" HERDR_SOCKET_PATH="$SOCK" "$BIN" setup-keys)
+echo "$FIRST_RUN" | grep -q 'bound prefix+e, prefix+f' || fail "setup-keys did not bind: $FIRST_RUN"
+KEYFILE="$KEYS/herdr/config.toml"
+grep -q 'command = "herdr-nvim.toggle"' "$KEYFILE" || fail "toggle binding missing"
+grep -q 'command = "herdr-nvim.pick-file"' "$KEYFILE" || fail "pick-file binding missing"
+grep -q 'type = "plugin_action"' "$KEYFILE" || fail "binding is not a plugin_action"
+AGAIN=$(env XDG_CONFIG_HOME="$KEYS" HERDR_SOCKET_PATH="$SOCK" "$BIN" setup-keys)
+echo "$AGAIN" | grep -q 'nothing to bind' || fail "setup-keys was not idempotent: $AGAIN"
+# A key already spoken for is left alone, and the file is backed up first.
+TAKEN="$TMP/keyhome2"; mkdir -p "$TAKEN/herdr"
+printf '[[keys.command]]\nkey = "prefix+e"\ntype = "popup"\ncommand = "lazygit"\n' > "$TAKEN/herdr/config.toml"
+CLASH=$(env XDG_CONFIG_HOME="$TAKEN" HERDR_SOCKET_PATH="$SOCK" "$BIN" setup-keys)
+echo "$CLASH" | grep -q 'skipped' || fail "setup-keys stole a bound key: $CLASH"
+grep -q 'lazygit' "$TAKEN/herdr/config.toml" || fail "setup-keys clobbered an existing binding"
+grep -q 'herdr-nvim.pick-file' "$TAKEN/herdr/config.toml" || fail "the free key was not bound"
+ls "$TAKEN/herdr/config.toml.bak-"* >/dev/null 2>&1 || fail "setup-keys wrote without a backup"
+
+step "agent status reaches the sidebar's Neovim"
+# The one thing only a real session can prove: Herdr actually delivering
+# pane.agent_status_changed to the manifest hook, which then pushes it down
+# the daemon socket into Lua. Driven with report-agent so no live agent -- and
+# no agent quota -- is needed.
+hs plugin action invoke open --plugin herdr-nvim >/dev/null; sleep 3
+SB=$(state_get "$TAB" sidebar_pane_id | tr -d '"')
+[ "$SB" != "null" ] || fail "no sidebar to push status into"
+DSOCK=$(state_get "$TAB" socket | tr -d '"')
+hs pane report-agent "$SB" --source e2e --agent claude --state working >/dev/null
+for _ in $(seq 1 25); do
+  SEEN=$(nvim --server "$DSOCK" --remote-expr "luaeval(\"(require('herdr-nvim.agent').status() or {}).status or ''\")" 2>/dev/null)
+  [ "$SEEN" = "working" ] && break
+  sleep 0.2
+done
+[ "$SEEN" = "working" ] || fail "Herdr's status never reached Neovim (saw '$SEEN')"
+LINE=$(nvim --server "$DSOCK" --remote-expr "luaeval(\"require('herdr-nvim').statusline()\")" 2>/dev/null)
+case "$LINE" in *claude*) ;; *) fail "statusline did not name the agent: '$LINE'";; esac
+hs pane report-agent "$SB" --source e2e --agent claude --state blocked >/dev/null
+for _ in $(seq 1 25); do
+  SEEN=$(nvim --server "$DSOCK" --remote-expr "luaeval(\"(require('herdr-nvim.agent').status() or {}).status or ''\")" 2>/dev/null)
+  [ "$SEEN" = "blocked" ] && break
+  sleep 0.2
+done
+[ "$SEEN" = "blocked" ] || fail "a second status change did not arrive (saw '$SEEN')"
+hs pane release-agent "$SB" --source e2e --agent claude >/dev/null; sleep 1
+# The daemon must survive: the agent-event arm sits before the wildcard that
+# would otherwise run a full gc on every idle/working flip.
+[ "$(state_get "$TAB" pid | tr -d '"')" != "null" ] || fail "the daemon was swept by an agent event"
+hide_sidebar
+
+step "review marks an agent edit and reverts it"
+hs plugin action invoke open --plugin herdr-nvim >/dev/null; sleep 3
+SB=$(state_get "$TAB" sidebar_pane_id | tr -d '"')
+DSOCK=$(state_get "$TAB" socket | tr -d '"')
+printf 'alpha\nbravo\nsee\n' > "$REPO/r.txt"
+nvim --server "$DSOCK" --remote-expr "execute('edit $REPO/r.txt')" >/dev/null
+# Recorded under a different spelling of the same path on purpose: the agent
+# writes down whatever it used, which need not be what Neovim opened.
+nvim --server "$DSOCK" --remote-expr "luaeval(\"require('herdr-nvim.review').record({{path='$REPO/./r.txt', old='charlie', new='see'}}, 'claude')\")" >/dev/null
+HUNKS=$(nvim --server "$DSOCK" --remote-expr "luaeval(\"require('herdr-nvim.review').count()\")" 2>/dev/null)
+[ "$HUNKS" = "1" ] || fail "the agent edit was not marked (count=$HUNKS)"
+nvim --server "$DSOCK" --remote-expr "luaeval(\"require('herdr-nvim.review').revert(require('herdr-nvim.review').find_at(vim.fn.bufnr('$REPO/r.txt'), 2))\")" >/dev/null
+REVERTED=$(nvim --server "$DSOCK" --remote-expr "getbufline(bufnr('$REPO/r.txt'), 3)[0]" 2>/dev/null)
+[ "$REVERTED" = "charlie" ] || fail "revert did not restore the agent's before-text (got '$REVERTED')"
+hide_sidebar
 
 step "tab close saves modified buffers and stops the daemon"
 nvim --server "$DSOCK" --remote-expr "execute(['edit a.txt','call setline(1,\"changed by e2e\")'])" >/dev/null
