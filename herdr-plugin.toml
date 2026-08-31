@@ -1,8 +1,8 @@
 id = "herdr-nvim"
 name = "Herdr Neovim"
-version = "0.2.2"
+version = "0.2.3"
 min_herdr_version = "0.8.2"
-description = "Per-tab Neovim sidebars backed by headless daemons. Ask an agent about the code you are looking at, or queue annotations and send them as one review."
+description = "Per-tab Neovim sidebars backed by headless daemons. Ask an agent about the code you are looking at, read its answer without leaving Neovim, and step through the edits it made with a key to put any of them back."
 platforms = ["linux", "macos"]
 
 # `herdr plugin install` runs this. The script downloads the prebuilt binary

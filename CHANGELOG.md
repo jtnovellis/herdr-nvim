@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-08-31
+
+### Changed
+
+- The manifest description now says what the plugin does today. It still
+  described the 0.1 feature set — a sidebar and a queue of annotations — and
+  that text is the pitch wherever the plugin is listed and in the install
+  preview, so it was selling the wrong thing.
+
 ## [0.2.2] - 2026-08-31
 
 ### Fixed
@@ -254,7 +263,8 @@ compare against.
 - `tests/fixtures/agent_output_claude.txt`, which no test referenced, and a
   `.gitignore` entry for a `config.env` no code reads.
 
-[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.3
 [0.2.2]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.2
 [0.2.1]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.0
