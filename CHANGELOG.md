@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-08-31
+
+### Fixed
+
+- **The reply window opened and then never filled.** `ask` starts following the
+  agent's transcript and then shows the window, but showing it closed whatever
+  was there — and closing retired the tail the line above had just started.
+  Dismissing the window still stops reading; replacing one no longer does.
+- **The answer was sized by buffer lines, so you read the middle of it.** An
+  agent's reply is one long paragraph, which counted as a single line, got the
+  three-row minimum and scrolled to the bottom. The window now measures how
+  many rows the text occupies once wrapped, and puts the newest turn at the
+  top rather than at the end.
+
+### Added
+
+- A real capture of the reply arriving in Neovim, in the README, plus
+  `scripts/termshot.py` to regenerate it from live pane output rather than
+  letting a screenshot drift from the code.
+
 ## [0.2.1] - 2026-08-31
 
 ### Fixed
@@ -234,7 +254,8 @@ compare against.
 - `tests/fixtures/agent_output_claude.txt`, which no test referenced, and a
   `.gitignore` entry for a `config.env` no code reads.
 
-[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/jtnovellis/herdr-nvim/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.2
 [0.2.1]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jtnovellis/herdr-nvim/releases/tag/v0.1.0

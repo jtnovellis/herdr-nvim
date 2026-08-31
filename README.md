@@ -31,6 +31,12 @@ Neovim integration for [Herdr](https://herdr.dev).
 - **Files edited by agents reload in the sidebar** while your pending
   annotations stay attached.
 
+![The sidebar showing review.lua, with the agent's answer in a float that does not take focus](doc/reply.svg)
+
+*A real capture: `<leader>ac` on a file in the sidebar, and the agent's answer
+arriving in Neovim. Regenerate it with `herdr pane read <pane> --source visible
+--format ansi | scripts/termshot.py > doc/reply.svg`.*
+
 The Herdr side is a single Rust binary that serves every manifest entrypoint;
 the Neovim side is a small Lua plugin that shells out to that binary. Both
 ship in this repository, so `herdr plugin install jtnovellis/herdr-nvim` is

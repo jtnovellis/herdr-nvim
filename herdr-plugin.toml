@@ -1,6 +1,6 @@
 id = "herdr-nvim"
 name = "Herdr Neovim"
-version = "0.2.1"
+version = "0.2.2"
 min_herdr_version = "0.8.2"
 description = "Per-tab Neovim sidebars backed by headless daemons. Ask an agent about the code you are looking at, or queue annotations and send them as one review."
 platforms = ["linux", "macos"]
