@@ -17,10 +17,12 @@ Neovim integration for [Herdr](https://herdr.dev).
   agent in the workspace (Claude Code, Codex, pi, OpenCode, …) with
   `file:line`, the code and git context attached. `@` in the composer attaches
   another file. `<leader>ar` keeps the conversation going.
-- **The answer comes back here.** A float that does not take your focus shows
-  what the agent is doing (`◑ working`, `⏸ waiting for you`, `✓ done`) and then
-  what it said. Your statusline shows the same thing, so you know whether the
-  agent is busy without looking away from the code.
+- **Focus lands on the agent.** Asking takes you to the agent's own pane, where
+  you were going to read the answer anyway; `prefix+e` brings you back. Prefer
+  to stay in the code? `after_ask = "reply"` shows the answer in a float that
+  does not take focus instead. Either way your statusline says what the agent is
+  doing (`◑ working`, `⏸ waiting for you`, `✓ done`), so you know whether it is
+  busy without looking away.
 - **Step through what the agent changed.** Its edits are marked where they
   landed; `]r` / `[r` move between them, `<leader>au` puts one back the way it
   was, `<leader>ak` marks it reviewed. It refuses to revert a hunk you have
@@ -33,9 +35,11 @@ Neovim integration for [Herdr](https://herdr.dev).
 
 ![The sidebar showing review.lua, with the agent's answer in a float that does not take focus](doc/reply.svg)
 
-*A real capture: `<leader>ac` on a file in the sidebar, and the agent's answer
-arriving in Neovim. Regenerate it with `herdr pane read <pane> --source visible
---format ansi | scripts/termshot.py > doc/reply.svg`.*
+*A real capture of `after_ask = "reply"`: `<leader>ac` on a file in the sidebar,
+and the agent's answer arriving in Neovim without taking focus. The default is
+`"focus"`, which takes you to the agent's own pane instead. Regenerate it with
+`herdr pane read <pane> --source visible --format ansi | scripts/termshot.py >
+doc/reply.svg`.*
 
 The Herdr side is a single Rust binary that serves every manifest entrypoint;
 the Neovim side is a small Lua plugin that shells out to that binary. Both
@@ -94,6 +98,10 @@ herdr plugin action invoke setup-keys --plugin herdr-nvim
 It adds `prefix+e` (toggle) and `prefix+f` (file picker), backs the file up
 first, skips any key you already use, and reloads the config so they work
 straight away. `:checkhealth herdr-nvim` tells you when they are missing.
+
+`prefix+e` hides the sidebar only when you are already in it; pressed from
+anywhere else it takes you there. So it is one key for the whole round trip:
+ask an agent, land in its pane, `prefix+e` back to the code.
 
 To do it yourself instead: Herdr's built-in `edit_scrollback` action uses
 `prefix+e` by default (it opens the pane's scrollback in `$EDITOR`, which
@@ -382,28 +390,43 @@ why does this fall back to raw input?
 A follow-up (`<leader>ar`) sends your message on its own — the agent already
 has the code from the turn before, and repeating the header only muddies it.
 
-### Where the reply goes
+### Where the answer goes
 
-Into a float in Neovim that does not take your focus, so you can keep working
-while it fills in. `q` or `⎋` closes it; `:HerdrReplyView` moves into it to
-scroll or copy.
+To the agent's own pane: sending moves your focus there, which is where you were
+going to read it anyway. `prefix+e` brings you back to the sidebar, cursor where
+you left it. That is `after_ask = "focus"`, the default, and `after_send` does
+the same for the annotation queue.
 
-The route is roundabout, because `agent.prompt` types a string into the
-agent's PTY and answers with lifecycle state, never text — the call that sends
-cannot also return the answer. The answer is still readable: Herdr reports the
-transcript file behind every agent pane, and that file is append-only, so
-`ask` records its length at the moment it sends and everything past that
-offset is the reply to that message. Herdr also pushes
+Two other modes:
+
+| `after_ask` / `after_send` | what happens |
+|---|---|
+| `"focus"` | move to the agent's Herdr pane (default) |
+| `"reply"` | stay here; the answer arrives in a float that does not take focus, `q` or `⎋` closes it, `:HerdrReplyView` moves into it to scroll or copy |
+| `"stay"` | neither; just the confirmation |
+
+`agent.focus` follows the agent wherever it lives, so if the remembered target
+is in another tab or workspace, `"focus"` takes you there.
+
+Reading the answer at all is roundabout, because `agent.prompt` types a string
+into the agent's PTY and answers with lifecycle state, never text — the call
+that sends cannot also return the answer. The answer is still readable: Herdr
+reports the transcript file behind every agent pane, and that file is
+append-only, so `ask` records its length at the moment it sends and everything
+past that offset is the reply to that message. Herdr also pushes
 `pane.agent_status_changed` as the agent picks the work up and puts it down,
 which is what the status in the float and the statusline is.
 
-Two caveats worth knowing. The transcript is written a message at a time, so
-the reply arrives in one piece rather than streaming word by word. And it only
-works for agents whose transcript format herdr-nvim can read — Claude Code and
-pi today; for anything else `session` comes back null, no float opens, and the
-agent's own pane is the place to read, exactly as before. Set
-`reply = { enabled = false }` to always read there instead, or
-`focus_after_ask = true` to have that pane focused for you.
+Two caveats worth knowing. The transcript is written a message at a time, so a
+`"reply"` float fills in one piece rather than streaming word by word. And it
+only works for agents whose transcript format herdr-nvim can read — Claude Code
+and pi today; for anything else `session` comes back null, no float opens, and
+the agent's own pane is the place to read, exactly as before.
+
+That same transcript is where the agent's *edits* come from, so herdr-nvim reads
+it whenever `review` is on — including under `"focus"` and `"stay"`, where
+nothing is displayed here. Reading the answer in the agent's pane does not cost
+you the marks in your buffers.
 
 ### Reviewing what the agent changed
 
@@ -453,7 +476,7 @@ above.
 | `<leader>al` | list comments (float): hover to preview, `⏎` edit, `d` delete, `o` go there, `s` paste, `S` send, `q` back to where you were |
 | `<leader>as` | paste all comments into the agent's input |
 | `<leader>aS` | send all comments to the agent (auto-submits) |
-| `]a` / `[a` | jump to the next / previous comment |
+| `]n` / `[n` | jump to the next / previous comment |
 | `<leader>af` | file picker (files the agent touched, then the whole repo) |
 
 Commands: `:HerdrAnnotate` (accepts a range), `:HerdrAnnotations`,
@@ -552,12 +575,11 @@ require("herdr-nvim").setup({
   prompt = "Comment: ",
   ask_height = 5,            -- initial composer height; it grows as you type
   ask_send_key = "<C-s>",    -- <CR> in normal mode always sends too
-  focus_after_ask = false,   -- focus the agent pane instead of reading the reply here
-  reply = { enabled = true },   -- show the agent's answer in a float
+  after_ask = "focus",       -- where <leader>ac leaves you: "focus" | "reply" | "stay"
+  after_send = "focus",      -- same, for <leader>aS / <leader>as
   review = { enabled = true },  -- mark the agent's edits; ]r / [r to step
   clear_on_send = true,      -- forget comments after <leader>aS
   clear_on_paste = false,    -- after <leader>as: keep them, marked delivered
-  focus_after_send = false,  -- jump to the agent pane after delivery
   notify = true,
   signs = false,             -- use the sign column instead of the line number
   statusline_icon = "●",
@@ -569,8 +591,18 @@ require("herdr-nvim").setup({
 ```
 
 Default mappings never override an existing mapping on the same keys (use
-`keymaps = "force"`). Set `vim.g.herdr_nvim_no_defaults = true` before the
-plugin loads to skip the automatic `setup()`. Highlights: `HerdrNvimAskRange`,
+`keymaps = "force"`), and `:checkhealth herdr-nvim` names every default that
+lost its key and what holds it — a mapping that silently goes missing is worse
+than one that is plainly absent.
+
+That is also why the bracket pairs are `]n`/`[n` and `]r`/`[r` rather than the
+obvious `]a`/`[a` and `]h`/`[h`: Neovim itself maps `]a`/`[a` to the argument
+list, nvim-treesitter-textobjects rebinds them to parameter motions, and
+gitsigns takes `]h`/`[h` buffer-locally. `:HerdrNext`, `:HerdrPrev`,
+`:HerdrNextEdit` and `:HerdrPrevEdit` work whatever holds the brackets.
+
+Set `vim.g.herdr_nvim_no_defaults = true` before the plugin loads to skip the
+automatic `setup()`. Highlights: `HerdrNvimAskRange`,
 `HerdrNvimAnnotation`, `HerdrNvimSign`, `HerdrNvimVirt`, `HerdrNvimListLoc`,
 `HerdrNvimStale`, `HerdrNvimDelivered`, `HerdrNvimReview`,
 `HerdrNvimReviewVirt`.

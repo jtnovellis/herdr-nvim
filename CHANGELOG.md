@@ -4,6 +4,56 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Asking an agent now takes you to its pane.** The answer used to arrive in a
+  float at the bottom of the sidebar — a second copy of what was already on
+  screen in the agent's own pane, shown at the cost of the thing you actually
+  wanted, which is being *in* that pane. `<leader>ac` and `<leader>aS` now move
+  your focus there, and `prefix+e` brings you back.
+- **`focus_after_ask`, `focus_after_send` and `reply = { enabled = ... }` are
+  replaced by `after_ask` and `after_send`**, each `"focus"` (the new default),
+  `"reply"` (the float, unchanged, `:HerdrReplyView` and all) or `"stay"`. Three
+  booleans described one choice and could contradict each other. The old keys
+  are still read and translated; `:checkhealth herdr-nvim` names each one it
+  translated and what to write instead.
+- `prefix+e` (`herdr-nvim toggle`) hides the sidebar only when the sidebar is
+  focused. Reaching for it from an agent's pane means "take me to Neovim", and
+  it used to hide the thing you were reaching for.
+
+### Fixed
+
+- **`focus_after_ask = true` did both things.** It was documented as focusing
+  the agent's pane *instead of* reading the reply in Neovim, but the focus flag
+  and the float were independent conditions, so it opened the float as well.
+- **Turning the reply float off silently disabled `]r` / `[r`.** The agent's
+  edits are mined from the same transcript tail that fills the float, and that
+  tail only ran when the float was going to open — so `reply = { enabled =
+  false }` also threw away every edit mark, with nothing said. Reading the
+  answer in the agent's pane no longer costs you the marks in your buffers.
+- **`<leader>aS` never marked a single edit.** `herdr-nvim send` returned no
+  transcript offset, so the annotation queue — the batch-review half of the
+  plugin, the one whose whole point is edits coming back — was the one route
+  that could not show you what the agent changed.
+
+- **`]a` / `[a` cycled annotations for nobody.** Neovim ships both as default
+  mappings that walk the argument list (`:next` / `:previous`), and
+  nvim-treesitter-textobjects rebinds them buffer-locally to parameter motions.
+  Since a default here never clobbers a key someone else holds, the annotation
+  cycle had no keys at all from 0.1.0 on — in any Neovim, not just a distro.
+  The pair is now `]n` / `[n` (next / previous *note*), free in both scopes, and
+  the old pair is retired so an in-session upgrade drops it. `:HerdrNext` and
+  `:HerdrPrev` were, and remain, the way through whatever holds the brackets.
+
+### Added
+
+- `:checkhealth herdr-nvim` now has a **keymaps** section: it names every
+  default that lost its key, what holds it, and what the key was for, plus the
+  buffer-local shadowing it cannot see at setup time. The bug above survived
+  every release up to 0.2.3 because a skipped default said nothing; now it speaks.
+
 ## [0.2.3] - 2026-08-31
 
 ### Changed

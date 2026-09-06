@@ -599,8 +599,22 @@ pub fn toggle() -> Result<i32> {
         return Ok(0);
     }
     if let Some(pane) = host.existing_sidebar()? {
-        host.close_sidebar(&pane)?;
-        println!("hid Neovim sidebar {pane}; its daemon keeps running");
+        // Hide it only when you are already in it. Reaching for the sidebar key
+        // from an agent's pane means "take me to Neovim", and closing it there
+        // hides the thing you were reaching for -- which is exactly what the
+        // key did while asking an agent left your focus behind.
+        let focused = host
+            .herdr
+            .pane_get(&pane)?
+            .map(|info| info.focused)
+            .unwrap_or(false);
+        if focused {
+            host.close_sidebar(&pane)?;
+            println!("hid Neovim sidebar {pane}; its daemon keeps running");
+        } else {
+            host.herdr.plugin_pane_focus(&pane)?;
+            println!("focused Neovim sidebar {pane}");
+        }
     } else {
         let pane = host.open_sidebar()?;
         println!("opened Neovim sidebar {pane}");

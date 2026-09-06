@@ -12,12 +12,15 @@ local defaults = {
   -- Ask (:HerdrAsk): the composer float and where its message goes.
   ask_height = 5, -- initial composer height; it grows as you type
   ask_send_key = "<C-s>", -- <CR> in normal mode always sends too
-  focus_after_ask = false, -- focus the agent pane instead of reading the reply here
-  reply = { enabled = true }, -- read the agent's answer in the composer
-  review = { enabled = true }, -- mark what the agent edited, ]h / [h to step
+  -- Where you end up once a message is delivered:
+  --   "focus" -- move to the agent's Herdr pane and read the answer there
+  --   "reply" -- stay here; the answer arrives in a float that does not focus
+  --   "stay"  -- neither; just the confirmation
+  after_ask = "focus", -- :HerdrAsk / <leader>ac
+  after_send = "focus", -- :HerdrSend / :HerdrPaste
+  review = { enabled = true }, -- mark what the agent edited, ]r / [r to step
   clear_on_send = true, -- forget annotations after <leader>aS succeeds
   clear_on_paste = false, -- after <leader>as: false marks them delivered instead
-  focus_after_send = false, -- focus the agent pane after delivery
   notify = true,
   signs = false, -- use the sign column (default: highlight the line number)
   statusline_icon = "●",
@@ -123,9 +126,14 @@ local keymaps = {
     end,
     "pick a file the agent touched",
   },
+  -- `]n`/`[n` -- next/previous *note* -- rather than the obvious `]a`/`[a`.
+  -- Neovim ships `]a`/`[a` as default mappings that walk the arglist
+  -- (`:next`/`:previous`), and treesitter-textobjects rebinds them
+  -- buffer-locally to parameter motions in code. apply_keymaps never clobbers a
+  -- key someone else holds, so the pair we actually wanted resolved for nobody.
   {
     "n",
-    "]a",
+    "]n",
     function()
       M.next()
     end,
@@ -133,7 +141,7 @@ local keymaps = {
   },
   {
     "n",
-    "[a",
+    "[n",
     function()
       M.prev()
     end,
@@ -196,7 +204,18 @@ local keymaps = {
 -- lhs present in the table above, so without this an in-session upgrade would
 -- strand the old mapping. Only our own are touched, so a user mapping that has
 -- since claimed the key survives.
-local retired = {}
+local retired = {
+  -- Cycled annotations until 0.2.4. Only removed when the mapping still carries
+  -- our desc, so a user mapping that has since claimed the key is left alone.
+  { "n", "]a" },
+  { "n", "[a" },
+}
+
+--- Defaults this plugin wanted but did not take, and what already held them.
+--- Reported by `:checkhealth herdr-nvim`. A default that quietly loses its key
+--- is otherwise invisible: `]a`/`[a` were dead from 0.1.0 to 0.2.3 because nobody
+--- could see that Neovim's own arglist mappings had them.
+M._skipped = {}
 
 local function is_ours(mapping)
   return type(mapping) == "table"
@@ -210,17 +229,116 @@ local function apply_keymaps(mode)
       pcall(vim.keymap.del, map[1], map[2])
     end
   end
+  M._skipped = {}
   for _, map in ipairs(keymaps) do
     local existing = vim.fn.maparg(map[2], map[1], false, true)
     local taken = type(existing) == "table" and next(existing) ~= nil
     if mode then
       if not taken or is_ours(existing) or mode == "force" then
         vim.keymap.set(map[1], map[2], map[3], { desc = DESC_PREFIX .. map[4], silent = true })
+      else
+        table.insert(M._skipped, {
+          mode = map[1],
+          lhs = map[2],
+          want = map[4],
+          held_by = existing.desc or existing.rhs or "another mapping",
+        })
       end
     elseif taken and is_ours(existing) then
       pcall(vim.keymap.del, map[1], map[2])
     end
   end
+end
+
+-- ------------------------------------------------------- retired options ---
+
+local MODES = { focus = true, reply = true, stay = true }
+
+-- Options this plugin used to take. `focus_after_ask`, `focus_after_send` and
+-- `reply.enabled` were three booleans describing one choice, with combinations
+-- that contradicted each other -- `focus_after_ask` promised "instead of the
+-- reply" and delivered both. They are still read, so a config written against
+-- 0.2.3 keeps working; `migrate` turns them into the single key that replaced
+-- them and records the rewrite for `:checkhealth`.
+local deprecated = { focus_after_ask = true, focus_after_send = true, reply = true }
+
+--- Keys translated out of the last `setup()`, as
+--- `{ was, now, replacement }`. Reported by `:checkhealth herdr-nvim`. A
+--- silently-honoured legacy key is how you end up reading documentation that
+--- describes a plugin you are not running.
+M._deprecated = {}
+
+--- The mode the old `focus_after_ask` / `reply.enabled` pair asked for.
+---
+--- `focus` wins over an explicit `reply = { enabled = true }`: doing both is
+--- exactly the contradiction this key replaces, and "instead of reading the
+--- reply here" is what the old option's own documentation promised.
+local function legacy_mode(focus, reply_enabled)
+  if focus == true then
+    return "focus"
+  end
+  if reply_enabled == false then
+    return "stay"
+  end
+  if focus == false or reply_enabled == true then
+    return "reply"
+  end
+  return nil
+end
+
+--- Rewrite legacy keys in `opts` into `after_ask` / `after_send`. An explicit
+--- new key always wins: someone who wrote both meant the one that still exists.
+local function migrate(opts)
+  M._deprecated = {}
+  if type(opts) ~= "table" then
+    return opts
+  end
+  -- A copy: `setup()` is called with the user's own table, and a caller that
+  -- reuses it must not find its keys rewritten underneath.
+  opts = vim.deepcopy(opts)
+  -- An unusable mode falls back rather than disabling the route silently.
+  for _, key in ipairs({ "after_ask", "after_send" }) do
+    if opts[key] ~= nil and not MODES[opts[key]] then
+      opts[key] = nil
+    end
+  end
+  -- Not `and ... or nil`: `enabled = false` is the case that matters most, and
+  -- that chain collapses it to nil -- turning "no float" back into the default.
+  local reply_enabled = nil
+  if type(opts.reply) == "table" then
+    reply_enabled = opts.reply.enabled
+  end
+  -- `now` is read back off `opts` after translation rather than passed in, so
+  -- a legacy key that said nothing usable (`reply = {}`) reports the mode that
+  -- actually applies instead of the nil it contributed.
+  local function record(was, replacement)
+    table.insert(M._deprecated, {
+      was = was,
+      now = opts[replacement] or defaults[replacement],
+      replacement = replacement,
+    })
+  end
+
+  local ask = legacy_mode(opts.focus_after_ask, reply_enabled)
+  if ask and opts.after_ask == nil then
+    opts.after_ask = ask
+  end
+  if opts.focus_after_ask ~= nil then
+    record("focus_after_ask = " .. tostring(opts.focus_after_ask), "after_ask")
+  end
+  if opts.reply ~= nil then
+    record("reply = { enabled = " .. tostring(reply_enabled) .. " }", "after_ask")
+  end
+
+  if opts.focus_after_send ~= nil then
+    if opts.after_send == nil then
+      opts.after_send = opts.focus_after_send and "focus" or "stay"
+    end
+    record("focus_after_send = " .. tostring(opts.focus_after_send), "after_send")
+  end
+
+  opts.focus_after_ask, opts.focus_after_send, opts.reply = nil, nil, nil
+  return opts
 end
 
 local function validate(opts)
@@ -229,10 +347,26 @@ local function validate(opts)
     return
   end
   for key in pairs(opts) do
-    if defaults[key] == nil and key ~= "binary" then
+    if defaults[key] == nil and key ~= "binary" and not deprecated[key] then
       notify("unknown option `" .. tostring(key) .. "`", vim.log.levels.WARN)
     end
   end
+  for _, key in ipairs({ "after_ask", "after_send" }) do
+    local value = opts[key]
+    if value ~= nil and not MODES[value] then
+      notify(
+        ('`%s` must be "focus", "reply" or "stay", not %s; keeping %q'):format(key, vim.inspect(value), M.config[key]),
+        vim.log.levels.WARN
+      )
+    end
+  end
+end
+
+--- Where a delivered message leaves you: "focus", "reply" or "stay".
+--- Never returns a value the callers do not understand.
+function M.mode(key)
+  local value = M.config[key]
+  return MODES[value] and value or defaults[key]
 end
 
 --- Pure helper for the :q guard: intercept only when a UI is attached and
@@ -363,7 +497,9 @@ end
 
 function M.setup(opts)
   validate(opts)
-  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+  -- After validate, so a legacy key is translated rather than reported as a
+  -- typo, and before the merge, so only the surviving keys reach M.config.
+  M.config = vim.tbl_deep_extend("force", M.config, migrate(opts) or {})
   M._setup_done = true
   A.config.signs = M.config.signs == true
   define_highlights()
@@ -581,7 +717,7 @@ function M.statusline()
 end
 
 local function goto_item(item)
-  -- Reached from the ]a / [a keymaps, so nothing here may throw: A.list keeps
+  -- Reached from the ]n / [n keymaps, so nothing here may throw: A.list keeps
   -- items whose buffer has since been wiped.
   if not (item and item.buf and vim.api.nvim_buf_is_valid(item.buf)) then
     notify("that annotation's buffer is gone", vim.log.levels.WARN)
@@ -689,7 +825,7 @@ local function deliver(mode, target, force)
   if force then
     table.insert(args, "--force")
   end
-  if M.config.focus_after_send then
+  if M.mode("after_send") == "focus" then
     table.insert(args, "--focus")
   end
   M._inflight = true
@@ -741,6 +877,14 @@ local function deliver(mode, target, force)
       else
         A.mark_delivered()
       end
+    end
+    -- Mine the agent's edits out of its transcript, the way an ask does. This
+    -- route never shows the answer here -- a batch of comments is a review
+    -- request, and you read the reply in the agent's pane -- but the edits it
+    -- makes still belong on the lines they changed. `res.session` is null for
+    -- an agent kind Herdr tracks no readable transcript for.
+    if res.session and M.config.review and M.config.review.enabled ~= false then
+      require("herdr-nvim.agent").follow(t.pane_id, res.session)
     end
     local verb = mode == "submit" and "sent" or "pasted"
     local via = (mode == "submit" and res.via and res.via ~= "agent.prompt") and " (raw input)" or ""

@@ -299,7 +299,7 @@ function Ask.send(message, ctx, opts)
   if opts.force then
     table.insert(args, "--force")
   end
-  if M.config.focus_after_ask then
+  if M.mode("after_ask") == "focus" then
     table.insert(args, "--focus")
   end
 
@@ -355,14 +355,21 @@ function Ask.send(message, ctx, opts)
     -- Follow the answer back. `res.session` is null when Herdr tracks no
     -- transcript we can read for this agent kind, in which case the agent's
     -- own pane stays the only place to read -- exactly as it always was.
-    local followed = false
-    if M.config.reply and M.config.reply.enabled ~= false and res.session then
-      followed = require("herdr-nvim.agent").follow(t.pane_id, res.session)
-      if followed then
-        require("herdr-nvim.reply").open({ agent = t.agent, pane_id = t.pane_id })
+    --
+    -- The tail feeds two things, and only one of them is the float: every edit
+    -- the agent makes is mined from the same transcript. So it runs whenever
+    -- review is on, not only when there is a window to render into -- reading
+    -- the answer in the agent's pane must not cost you `]r`/`[r`.
+    local want_reply = M.mode("after_ask") == "reply"
+    local want_review = M.config.review and M.config.review.enabled ~= false
+    local shown = false
+    if res.session and (want_reply or want_review) then
+      local followed = require("herdr-nvim.agent").follow(t.pane_id, res.session)
+      if followed and want_reply then
+        shown = require("herdr-nvim.reply").open({ agent = t.agent, pane_id = t.pane_id })
       end
     end
-    if not followed then
+    if not shown then
       notify(("asked %s (%s)%s"):format(t.agent or "agent", t.pane_id or "?", via))
     end
   end, { label = "asking the agent" })

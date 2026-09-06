@@ -231,7 +231,7 @@ fn ask_inner(opts: &AskArgs) -> Result<Value> {
 /// tracks no session we can resolve (an agent kind with no parser, or one
 /// reporting an id we cannot turn into a file). A null marker is not an
 /// error: the caller simply gets no reply view, exactly as before.
-fn session_marker(fresh: &herdr::AgentInfo, cwd: &Path) -> Value {
+pub(crate) fn session_marker(fresh: &herdr::AgentInfo, cwd: &Path) -> Value {
     let Some(session) = &fresh.agent_session else {
         return Value::Null;
     };

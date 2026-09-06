@@ -219,12 +219,17 @@ fn send_inner(opts: &SendArgs) -> Result<Value> {
     };
 
     // Re-check right before delivery: state can change after `agent list`.
-    match herdr.agent_get(&target.pane_id) {
+    let session = match herdr.agent_get(&target.pane_id) {
         Ok(Some(fresh)) => {
             if let Some(status) = fresh.agent_status.clone() {
                 target.status = status;
             }
+            // Where the edits will land. Read *before* delivering, for the same
+            // reason `ask` does: the offset has to be the transcript length as
+            // it was when we sent, or the tail would skip the first of them.
+            let marker = crate::ask::session_marker(&fresh, &cwd);
             precheck(&target, fresh.launch_pending.unwrap_or(false), opts.force)?;
+            marker
         }
         Ok(None) => {
             return Err(coded(
@@ -233,7 +238,7 @@ fn send_inner(opts: &SendArgs) -> Result<Value> {
             ))
         }
         Err(err) => return Err(err.context("cannot check the agent's state")),
-    }
+    };
 
     let absolute = paths_should_be_absolute(repo_root, &cwd, target.cwd.as_deref());
     let prompt = build_prompt(
@@ -254,6 +259,7 @@ fn send_inner(opts: &SendArgs) -> Result<Value> {
         "via": via,
         "target": target,
         "count": payload.comments.len(),
+        "session": session,
     }))
 }
 

@@ -62,6 +62,33 @@ function M.check()
     end
   end
 
+  health.start("herdr-nvim: keymaps")
+  if hn.config.keymaps == false then
+    health.info("keymaps are disabled (`keymaps = false`); use the :Herdr* commands")
+  else
+    local skipped = hn._skipped or {}
+    if #skipped == 0 then
+      health.ok("every default mapping resolves to herdr-nvim")
+    end
+    -- A default that loses its key is invisible otherwise: `]a`/`[a` cycled
+    -- nothing from 0.1.0 to 0.2.3 because Neovim's own arglist mappings held them
+    -- and nothing ever said so.
+    for _, m in ipairs(skipped) do
+      health.warn(("%s (%s) is held by %q, so %q has no key"):format(m.lhs, m.mode, m.held_by, m.want), {
+        ('map it yourself, or pass `keymaps = "force"` to take %s anyway'):format(m.lhs),
+      })
+    end
+    -- Only the global picture is knowable here: `:checkhealth` runs in its own
+    -- buffer, so a code buffer's local mappings are out of scope and cannot be
+    -- probed. `]n`/`[n` and `]r`/`[r` were picked to dodge the usual local
+    -- claimants (treesitter-textobjects on `]a`, gitsigns on `]h`), but a
+    -- config can still shadow them per buffer, which looks like a dead key.
+    health.info(
+      "brackets can also be shadowed buffer-locally, which this cannot see; "
+        .. ":HerdrNext / :HerdrPrev / :HerdrNextEdit / :HerdrPrevEdit always work"
+    )
+  end
+
   health.start("herdr-nvim: binary")
   local bin, source = bridge.resolve(hn.config)
   if bin then
@@ -233,16 +260,33 @@ function M.check()
     health.info("no agent remembered yet; the first :HerdrAsk picks one")
   end
 
-  health.start("herdr-nvim: reply and review")
-  local cfg = require("herdr-nvim").config
-  if cfg.reply and cfg.reply.enabled ~= false then
+  health.start("herdr-nvim: answers and edits")
+  local hn = require("herdr-nvim")
+  local cfg = hn.config
+  local WHERE = {
+    focus = "focus the agent's Herdr pane and read the answer there",
+    reply = "open a float here that does not take focus",
+    stay = "stay put; just the confirmation",
+  }
+  for _, key in ipairs({ "after_ask", "after_send" }) do
+    local mode = hn.mode(key)
+    health.ok(("`%s = %q`: %s"):format(key, mode, WHERE[mode]))
+  end
+  if hn.mode("after_ask") == "reply" then
     -- Reading an answer back means parsing the agent's own transcript, and
     -- only two formats are understood. Saying so here is cheaper than a user
     -- concluding the feature is broken when their agent simply is not one.
-    health.ok("reply view on; readable transcripts: Claude Code, pi")
+    health.info("readable transcripts: Claude Code, pi")
     health.info("any other agent: no float opens and its own Herdr pane stays the place to read")
-  else
-    health.info("reply view off (`reply = { enabled = false }`)")
+  end
+  -- Options that still work but no longer describe what the plugin does. A
+  -- config quietly honoured while its documentation describes something else
+  -- is the same silent drift `:checkhealth` reports for skipped keymaps.
+  for _, old_key in ipairs(hn._deprecated or {}) do
+    health.warn(("`%s` is deprecated"):format(old_key.was), {
+      ("it now means `%s = %q`"):format(old_key.replacement, tostring(old_key.now)),
+      "write that instead; the old key will stop being read in a future release",
+    })
   end
   local agent = require("herdr-nvim.agent").status()
   if agent then
