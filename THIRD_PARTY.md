@@ -1,14 +1,9 @@
 # Third-party notices
 
-Parts of this project are adapted from
-[ChmaraX/herdr-nvim](https://github.com/ChmaraX/herdr-nvim) (MIT License,
-Copyright (c) 2026 Adam Chmara): the guillotine layout planner used to rebuild
-a tab's panes beside a full-height sidebar (`src/layout.rs`), the agent
-session-log mining, git scanning, pane-output path extraction and candidate
-merging behind the file picker (`src/sessions.rs`, `src/gitscan.rs`,
-`src/extract.rs`, `src/candidates.rs`), the clicked-link parsing in
-`src/edit.rs`, the `[[link_handlers]]` patterns in `herdr-plugin.toml`, and the
-layout fixtures under `tests/fixtures/`.
+Adapted from [ChmaraX/herdr-nvim](https://github.com/ChmaraX/herdr-nvim): the
+layout planner (`src/layout.rs`, `tests/fixtures/`), the file picker's
+candidate sources (`src/sessions.rs`, `src/gitscan.rs`, `src/extract.rs`,
+`src/candidates.rs`) and link handling (`src/edit.rs`, `herdr-plugin.toml`).
 
 MIT License
 
