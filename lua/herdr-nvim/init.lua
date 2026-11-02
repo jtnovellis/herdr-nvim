@@ -553,22 +553,24 @@ end
 --- (`opts = { line1 = n, line2 = m }`). Overlapping an existing annotation edits it.
 function M.annotate(opts)
   local buf = vim.api.nvim_get_current_buf()
-  if vim.bo[buf].buftype ~= "" then
+  local source = require("herdr-nvim.diffview").current(buf)
+  local name = vim.api.nvim_buf_get_name(buf)
+  if not source and (vim.bo[buf].buftype ~= "" or name:match("^diffview://")) then
     notify("annotations need a file buffer", vim.log.levels.WARN)
     return
   end
-  if vim.api.nvim_buf_get_name(buf) == "" then
+  if name == "" then
     notify("save the file first: unnamed buffers cannot be sent to an agent", vim.log.levels.WARN)
     return
   end
   local srow, erow = M.current_range(opts)
-  local existing = A.find_overlapping(buf, srow, erow)
+  local existing = A.find_overlapping(buf, srow, erow, source or {})
   if existing then
     M.edit(existing.id)
     return
   end
   input(M.config.prompt, "", function(text)
-    A.add(buf, srow, erow, text)
+    A.add(buf, srow, erow, text, source)
   end)
 end
 
@@ -795,6 +797,7 @@ local function payload()
         code = table.concat(lines, "\n"),
         filetype = vim.bo[item.buf].filetype,
         modified = vim.bo[item.buf].modified,
+        diff = item.diff,
       })
     end
   end

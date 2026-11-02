@@ -124,7 +124,7 @@ function A.refresh(item)
   return item
 end
 
-function A.add(buf, srow, erow, text)
+function A.add(buf, srow, erow, text, source)
   if buf == 0 or buf == nil then
     buf = vim.api.nvim_get_current_buf()
   end
@@ -132,7 +132,8 @@ function A.add(buf, srow, erow, text)
   local item = {
     id = next_id,
     buf = buf,
-    file = vim.api.nvim_buf_get_name(buf),
+    file = source and source.file or vim.api.nvim_buf_get_name(buf),
+    diff = source and vim.deepcopy(source.diff) or nil,
     text = text,
     stale = false,
     delivered = false,
@@ -239,6 +240,7 @@ function A.list(opts)
         row = item.row,
         end_row = item.end_row,
         file = item.file,
+        diff = item.diff,
         stale = item.stale,
         delivered = item.delivered,
       })
@@ -281,10 +283,15 @@ function A.total()
   return n
 end
 
---- The first item whose range intersects rows srow..erow in buf.
-function A.find_overlapping(buf, srow, erow)
+--- The first intersecting item, restricted to the source context when supplied.
+function A.find_overlapping(buf, srow, erow, source)
   for _, item in ipairs(A.list({ include_stale = true, include_delivered = true })) do
-    if item.buf == buf and item.row <= erow and item.end_row >= srow then
+    if
+      item.buf == buf
+      and item.row <= erow
+      and item.end_row >= srow
+      and (not source or vim.deep_equal(item.diff, source.diff))
+    then
       return item
     end
   end

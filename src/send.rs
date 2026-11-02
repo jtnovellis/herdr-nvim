@@ -32,6 +32,23 @@ pub struct Comment {
     pub filetype: Option<String>,
     #[serde(default)]
     pub modified: Option<bool>,
+    #[serde(default)]
+    pub diff: Option<DiffContext>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiffContext {
+    pub repo_root: String,
+    pub path: String,
+    pub revision: String,
+    pub side: DiffSide,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiffSide {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -597,6 +614,16 @@ pub fn build_prompt(
             out.push_str(" (buffer has unsaved changes)");
         }
         out.push('\n');
+        if let Some(diff) = &comment.diff {
+            let side = match diff.side {
+                DiffSide::Left => "left",
+                DiffSide::Right => "right",
+            };
+            out.push_str(&format!(
+                "Diffview: {side} side, revision {}\nRepository: {}\nRevision path: {}\n",
+                diff.revision, diff.repo_root, diff.path
+            ));
+        }
         out.push_str(&format!("Comment: {}\n", comment.text.trim()));
         if let Some(code) = comment.code.as_deref().filter(|c| !c.trim().is_empty()) {
             let lang = comment.filetype.as_deref().unwrap_or("");
@@ -818,6 +845,7 @@ mod tests {
                 code: Some("a\nb\nc".into()),
                 filetype: Some("rust".into()),
                 modified: Some(true),
+                diff: None,
             },
             Comment {
                 file: "/elsewhere/x.lua".into(),
@@ -827,6 +855,7 @@ mod tests {
                 code: None,
                 filetype: None,
                 modified: None,
+                diff: None,
             },
         ];
         let prompt = build_prompt(&comments, Some(&git), Path::new("/repo"), 2, None);
@@ -858,10 +887,46 @@ mod tests {
             code: Some("x = 1\n".into()),
             filetype: Some("python".into()),
             modified: Some(false),
+            diff: None,
         }];
         let prompt = build_prompt(&comments, None, Path::new("/tmp/proj"), 80, None);
         assert!(prompt.contains("(1 comment)\nDirectory: /tmp/proj\n"));
         assert!(prompt.contains("## 1. a.py:10\nComment: why?\n```python\nx = 1\n```"));
+    }
+
+    #[test]
+    fn diff_context_survives_payload_and_prompt() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        for (side, revision) in [
+            ("left", sha),
+            ("right", sha),
+            ("left", "INDEX:0"),
+            ("right", "WORKTREE"),
+        ] {
+            let payload: Payload = serde_json::from_value(json!({
+                "comments": [{
+                    "file": "/repo/historical name.lua", "line": 2, "end_line": 3,
+                    "text": "check this", "code": "old code",
+                    "diff": {
+                        "repo_root": "/repo", "path": "historical name.lua",
+                        "revision": revision, "side": side
+                    }
+                }]
+            }))
+            .unwrap();
+            let prompt = build_prompt(&payload.comments, None, Path::new("/other"), 80, None);
+            assert!(prompt.contains("## 1. /repo/historical name.lua:2-3\n"));
+            assert!(prompt.contains(&format!(
+                "Diffview: {side} side, revision {revision}\nRepository: /repo\nRevision path: historical name.lua\nComment: check this\n"
+            )));
+        }
+        let legacy: Comment =
+            serde_json::from_str(r#"{"file":"/repo/a","line":1,"text":"legacy"}"#).unwrap();
+        assert!(legacy.diff.is_none());
+        assert!(serde_json::from_value::<DiffContext>(json!({
+            "repo_root": "/repo", "path": "a", "revision": sha, "side": "unknown"
+        }))
+        .is_err());
     }
 
     #[test]
